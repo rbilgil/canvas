@@ -2,18 +2,15 @@
 
 import { useAction } from "convex/react";
 import {
+	forwardRef,
 	useCallback,
 	useEffect,
+	useImperativeHandle,
 	useMemo,
 	useRef,
 	useState,
-	useImperativeHandle,
-	forwardRef,
 } from "react";
 import { createPortal } from "react-dom";
-import { api } from "../../convex/_generated/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
 	applyCommandsToState,
 	invertCommands,
@@ -40,6 +37,9 @@ import {
 	readImageFile,
 	svgToClient,
 } from "@/components/canvas/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { api } from "../../convex/_generated/api";
 
 export interface DesignData {
 	id: string;
@@ -128,6 +128,9 @@ function SingleDesignCanvas({
 }: SingleDesignCanvasProps) {
 	const [shapes, setShapes] = useState<CanvasShape[]>(design.initialShapes);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+
+	// Track which design we've initialized to avoid re-syncing from server on our own saves
+	const initializedForDesignRef = useRef<string | null>(null);
 	const [selectedIds, setSelectedIds] = useState<Array<string>>([]);
 	const [isPointerDown, setIsPointerDown] = useState(false);
 	const [draftId, setDraftId] = useState<string | null>(null);
@@ -205,15 +208,25 @@ function SingleDesignCanvas({
 		height: number;
 	}>(null);
 
-	// Notify parent of shape changes
+	// Notify parent of shape changes (but skip initial notification to avoid triggering saves)
+	const hasNotifiedRef = useRef(false);
 	useEffect(() => {
-		onShapesChange?.(shapes);
+		if (hasNotifiedRef.current) {
+			onShapesChange?.(shapes);
+		} else {
+			hasNotifiedRef.current = true;
+		}
 	}, [shapes, onShapesChange]);
 
-	// Sync with initial shapes when they change externally
+	// Only sync from initialShapes when switching to a different design
+	// This prevents server updates from overwriting local state during editing
 	useEffect(() => {
-		setShapes(design.initialShapes);
-	}, [design.initialShapes]);
+		if (initializedForDesignRef.current !== design.id) {
+			setShapes(design.initialShapes);
+			initializedForDesignRef.current = design.id;
+			hasNotifiedRef.current = false; // Reset notification flag for new design
+		}
+	}, [design.id, design.initialShapes]);
 
 	const applyCommandGroup = useCallback(
 		(commands: Array<AnyCommand>, opts?: { recordUndo?: boolean }) => {
@@ -278,9 +291,7 @@ function SingleDesignCanvas({
 								dataUrl: before.href,
 								prompt: cmd.prompt,
 							});
-							const snapshot = JSON.parse(
-								JSON.stringify(before),
-							) as ImageShape;
+							const snapshot = JSON.parse(JSON.stringify(before)) as ImageShape;
 							setUndoStack((stack) => [
 								...stack,
 								[{ tool: "replaceShape", shape: snapshot }],
@@ -506,7 +517,17 @@ function SingleDesignCanvas({
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
-	}, [isActive, selectedId, selectedIds, shapes, getUndoStack, setUndoStack, design.id, undoStackRef, onUndoStackChange]);
+	}, [
+		isActive,
+		selectedId,
+		selectedIds,
+		shapes,
+		getUndoStack,
+		setUndoStack,
+		design.id,
+		undoStackRef,
+		onUndoStackChange,
+	]);
 
 	const selectedShape = useMemo(() => {
 		if (selectedIds.length === 1) {
@@ -1013,8 +1034,11 @@ function SingleDesignCanvas({
 							if (!file.type.startsWith("image/")) continue;
 							void (async () => {
 								try {
-									const { dataUrl, width: imgW, height: imgH } =
-										await readImageFile(file);
+									const {
+										dataUrl,
+										width: imgW,
+										height: imgH,
+									} = await readImageFile(file);
 									const id = createShapeId("img");
 									setShapes((prev) => [
 										...prev,
