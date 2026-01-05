@@ -174,13 +174,16 @@ function SingleDesignCanvas({
 	// Pending operations to send to server
 	const pendingOpsRef = useRef<CanvasOperation[]>([]);
 	const flushTimeoutRef = useRef<number | null>(null);
-	const lastServerTimestampRef = useRef<number>(0);
+	// Track last seen _creationTime for sync (following Convex+Automerge pattern)
+	const lastCreationTimeRef = useRef<number>(0);
 
 	// Convex mutations - using type assertion until types are regenerated
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const applyOpsMutation = useMutation(designOpsApi.applyOperations as any);
 
 	// Subscribe to remote operations (from other clients)
+	// Using _creationTime for ordering as recommended by:
+	// https://stack.convex.dev/automerge-and-convex
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const remoteOps = useQuery(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -188,7 +191,7 @@ function SingleDesignCanvas({
 		design.id
 			? {
 					designId: design.id as Id<"designs">,
-					sinceTimestamp: lastServerTimestampRef.current,
+					sinceCreationTime: lastCreationTimeRef.current,
 					excludeClientId: clientId,
 				}
 			: "skip",
@@ -243,27 +246,28 @@ function SingleDesignCanvas({
 		if (initializedForDesignRef.current !== design.id) {
 			setShapes(design.initialShapes);
 			setUndoStack([]);
-			lastServerTimestampRef.current = 0;
+			lastCreationTimeRef.current = 0;
 			initializedForDesignRef.current = design.id;
 		}
 	}, [design.id, design.initialShapes]);
 
 	// Apply remote operations when they arrive
+	// Following the sync pattern from: https://stack.convex.dev/automerge-and-convex
 	useEffect(() => {
 		if (!remoteOps || remoteOps.length === 0) return;
 
 		const newOps = remoteOps.map(
-			(op: { operation: string; serverTimestamp: number }) =>
+			(op: { operation: string; creationTime: number }) =>
 				deserializeOperation(op.operation),
 		);
 		setShapes((prev) => applyOperations(prev, newOps));
 
-		// Update the last processed timestamp
-		const maxTimestamp = Math.max(
-			...remoteOps.map((op: { serverTimestamp: number }) => op.serverTimestamp),
+		// Update the last seen _creationTime
+		const maxCreationTime = Math.max(
+			...remoteOps.map((op: { creationTime: number }) => op.creationTime),
 		);
-		if (maxTimestamp > lastServerTimestampRef.current) {
-			lastServerTimestampRef.current = maxTimestamp;
+		if (maxCreationTime > lastCreationTimeRef.current) {
+			lastCreationTimeRef.current = maxCreationTime;
 		}
 	}, [remoteOps]);
 
@@ -273,6 +277,7 @@ function SingleDesignCanvas({
 	}, [undoStack.length, onCanUndoChange]);
 
 	// Flush pending operations to server
+	// Following the sync pattern from: https://stack.convex.dev/automerge-and-convex
 	const flushPendingOps = useCallback(async () => {
 		if (!design.id || pendingOpsRef.current.length === 0) return;
 
@@ -290,13 +295,14 @@ function SingleDesignCanvas({
 				})),
 			});
 
-			// Update our timestamp to avoid reprocessing our own ops
-			if (result.serverTimestamp > lastServerTimestampRef.current) {
-				lastServerTimestampRef.current = result.serverTimestamp;
+			// Update our _creationTime cursor to avoid reprocessing our own ops
+			// The server returns the lastCreationTime from the inserted documents
+			if (result.lastCreationTime > lastCreationTimeRef.current) {
+				lastCreationTimeRef.current = result.lastCreationTime;
 			}
 		} catch (error) {
 			console.error("Failed to apply operations:", error);
-			// Re-queue the operations for retry
+			// Re-queue the operations for retry (idempotency ensures safety)
 			pendingOpsRef.current = [...opsToSend, ...pendingOpsRef.current];
 		}
 	}, [design.id, clientId, applyOpsMutation]);

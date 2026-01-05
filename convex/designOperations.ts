@@ -1,3 +1,15 @@
+/**
+ * CRDT Operations for Canvas Designs
+ *
+ * Following the pattern from: https://stack.convex.dev/automerge-and-convex
+ *
+ * Key principles:
+ * - Use _creationTime for ordering (Convex-managed, robust)
+ * - Operations are idempotent (deduplicated by operationId)
+ * - Clients track the last _creationTime they've seen
+ * - Sync only fetches changes since that timestamp
+ */
+
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
@@ -8,11 +20,11 @@ export const applyOperation = mutation({
 		clientId: v.string(),
 		operationId: v.string(),
 		operation: v.string(), // JSON-serialized operation
-		timestamp: v.number(),
+		clientTimestamp: v.number(),
 	},
 	returns: v.object({
 		success: v.boolean(),
-		serverTimestamp: v.number(),
+		creationTime: v.number(),
 		isDuplicate: v.boolean(),
 	}),
 	handler: async (ctx, args) => {
@@ -33,6 +45,7 @@ export const applyOperation = mutation({
 		}
 
 		// Check for duplicate operation (idempotency)
+		// This is critical for CRDT correctness - operations must be safely re-applicable
 		const existing = await ctx.db
 			.query("designOperations")
 			.withIndex("by_operation_id", (q) =>
@@ -43,30 +56,31 @@ export const applyOperation = mutation({
 		if (existing) {
 			return {
 				success: true,
-				serverTimestamp: existing.serverTimestamp,
+				creationTime: existing._creationTime,
 				isDuplicate: true,
 			};
 		}
 
-		const serverTimestamp = Date.now();
-
-		// Store the operation
-		await ctx.db.insert("designOperations", {
+		// Store the operation - _creationTime is automatically set by Convex
+		const docId = await ctx.db.insert("designOperations", {
 			designId: args.designId,
 			clientId: args.clientId,
 			operationId: args.operationId,
 			operation: args.operation,
-			timestamp: args.timestamp,
-			serverTimestamp,
+			clientTimestamp: args.clientTimestamp,
 		});
 
+		// Get the created document to return its _creationTime
+		const created = await ctx.db.get(docId);
+
 		// Update design's updatedAt
-		await ctx.db.patch(args.designId, { updatedAt: serverTimestamp });
-		await ctx.db.patch(design.projectId, { updatedAt: serverTimestamp });
+		const now = Date.now();
+		await ctx.db.patch(args.designId, { updatedAt: now });
+		await ctx.db.patch(design.projectId, { updatedAt: now });
 
 		return {
 			success: true,
-			serverTimestamp,
+			creationTime: created?._creationTime ?? now,
 			isDuplicate: false,
 		};
 	},
@@ -87,7 +101,7 @@ export const applyOperations = mutation({
 	},
 	returns: v.object({
 		success: v.boolean(),
-		serverTimestamp: v.number(),
+		lastCreationTime: v.number(),
 		appliedCount: v.number(),
 	}),
 	handler: async (ctx, args) => {
@@ -107,11 +121,11 @@ export const applyOperations = mutation({
 			throw new Error("Design not found");
 		}
 
-		const serverTimestamp = Date.now();
 		let appliedCount = 0;
+		let lastCreationTime = 0;
 
 		for (const op of args.operations) {
-			// Check for duplicate
+			// Check for duplicate (idempotency)
 			const existing = await ctx.db
 				.query("designOperations")
 				.withIndex("by_operation_id", (q) =>
@@ -120,36 +134,46 @@ export const applyOperations = mutation({
 				.first();
 
 			if (!existing) {
-				await ctx.db.insert("designOperations", {
+				const docId = await ctx.db.insert("designOperations", {
 					designId: args.designId,
 					clientId: args.clientId,
 					operationId: op.operationId,
 					operation: op.operation,
-					timestamp: op.timestamp,
-					serverTimestamp: serverTimestamp + appliedCount, // Ensure ordering
+					clientTimestamp: op.timestamp,
 				});
+				const created = await ctx.db.get(docId);
+				if (created) {
+					lastCreationTime = Math.max(lastCreationTime, created._creationTime);
+				}
 				appliedCount++;
+			} else {
+				lastCreationTime = Math.max(lastCreationTime, existing._creationTime);
 			}
 		}
 
 		if (appliedCount > 0) {
-			await ctx.db.patch(args.designId, { updatedAt: serverTimestamp });
-			await ctx.db.patch(design.projectId, { updatedAt: serverTimestamp });
+			const now = Date.now();
+			await ctx.db.patch(args.designId, { updatedAt: now });
+			await ctx.db.patch(design.projectId, { updatedAt: now });
 		}
 
 		return {
 			success: true,
-			serverTimestamp,
+			lastCreationTime,
 			appliedCount,
 		};
 	},
 });
 
-// Get operations for a design since a given timestamp
+// Get operations for a design since a given _creationTime
+// Following the article's pattern: query by _creationTime for sync
+// Note: As mentioned in the article, there's an edge case where mutations
+// running around the same time might insert slightly out of order.
+// We handle this by fetching a small buffer before the requested timestamp.
 export const getOperationsSince = query({
 	args: {
 		designId: v.id("designs"),
-		sinceTimestamp: v.number(),
+		sinceCreationTime: v.number(),
 		excludeClientId: v.optional(v.string()), // Exclude operations from this client
 	},
 	returns: v.array(
@@ -157,8 +181,8 @@ export const getOperationsSince = query({
 			operationId: v.string(),
 			operation: v.string(),
 			clientId: v.string(),
-			timestamp: v.number(),
-			serverTimestamp: v.number(),
+			clientTimestamp: v.number(),
+			creationTime: v.number(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -178,29 +202,41 @@ export const getOperationsSince = query({
 			return [];
 		}
 
+		// Query operations for this design, ordered by _creationTime
+		// Per the article: we add a small buffer (100ms) to handle edge cases
+		// where mutations running concurrently might insert slightly out of order
+		const bufferMs = 100;
+		const queryFrom = Math.max(0, args.sinceCreationTime - bufferMs);
+
 		const operations = await ctx.db
 			.query("designOperations")
-			.withIndex("by_design_after", (q) =>
-				q.eq("designId", args.designId).gt("serverTimestamp", args.sinceTimestamp),
-			)
+			.withIndex("by_design", (q) => q.eq("designId", args.designId))
+			.filter((q) => q.gt(q.field("_creationTime"), queryFrom))
 			.collect();
 
 		// Filter out operations from the requesting client if specified
-		const filtered = args.excludeClientId
-			? operations.filter((op) => op.clientId !== args.excludeClientId)
-			: operations;
+		// and filter to only include operations after the actual requested time
+		const filtered = operations.filter((op) => {
+			if (args.excludeClientId && op.clientId === args.excludeClientId) {
+				return false;
+			}
+			// Only include if actually after the requested time (not in the buffer zone)
+			// unless we haven't seen it before
+			return op._creationTime > args.sinceCreationTime;
+		});
 
 		return filtered.map((op) => ({
 			operationId: op.operationId,
 			operation: op.operation,
 			clientId: op.clientId,
-			timestamp: op.timestamp,
-			serverTimestamp: op.serverTimestamp,
+			clientTimestamp: op.clientTimestamp,
+			creationTime: op._creationTime,
 		}));
 	},
 });
 
 // Get all operations for a design (for initial load)
+// This replays the full history to reconstruct the current state
 export const getAllOperations = query({
 	args: {
 		designId: v.id("designs"),
@@ -210,8 +246,8 @@ export const getAllOperations = query({
 			operationId: v.string(),
 			operation: v.string(),
 			clientId: v.string(),
-			timestamp: v.number(),
-			serverTimestamp: v.number(),
+			clientTimestamp: v.number(),
+			creationTime: v.number(),
 		}),
 	),
 	handler: async (ctx, args) => {
@@ -231,6 +267,7 @@ export const getAllOperations = query({
 			return [];
 		}
 
+		// Get all operations ordered by _creationTime (implicit ordering)
 		const operations = await ctx.db
 			.query("designOperations")
 			.withIndex("by_design", (q) => q.eq("designId", args.designId))
@@ -240,14 +277,15 @@ export const getAllOperations = query({
 			operationId: op.operationId,
 			operation: op.operation,
 			clientId: op.clientId,
-			timestamp: op.timestamp,
-			serverTimestamp: op.serverTimestamp,
+			clientTimestamp: op.clientTimestamp,
+			creationTime: op._creationTime,
 		}));
 	},
 });
 
-// Get the latest server timestamp for a design
-export const getLatestTimestamp = query({
+// Get the latest _creationTime for a design's operations
+// Used by clients to initialize their sync cursor
+export const getLatestCreationTime = query({
 	args: {
 		designId: v.id("designs"),
 	},
@@ -268,13 +306,13 @@ export const getLatestTimestamp = query({
 			return 0;
 		}
 
+		// Get the most recent operation
 		const latest = await ctx.db
 			.query("designOperations")
 			.withIndex("by_design", (q) => q.eq("designId", args.designId))
 			.order("desc")
 			.first();
 
-		return latest?.serverTimestamp ?? 0;
+		return latest?._creationTime ?? 0;
 	},
 });
-

@@ -1,5 +1,10 @@
 "use client";
 
+/**
+ * React hook for CRDT-based canvas operations
+ * Following the pattern from: https://stack.convex.dev/automerge-and-convex
+ */
+
 import { useMutation, useQuery } from "convex/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../convex/_generated/api";
@@ -24,7 +29,7 @@ import {
 } from "./operations";
 import type { CanvasShape } from "./types";
 
-// Generate a unique client ID for this session
+// Generate a unique client ID for this session (like Automerge's "actor")
 function generateClientId(): string {
 	return `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 }
@@ -58,8 +63,8 @@ export function useCanvasOperations({
 	// Operation stack for undo (stores the inverse operations)
 	const [undoStack, setUndoStack] = useState<CanvasOperation[]>([]);
 
-	// Track the last server timestamp we've processed
-	const lastServerTimestampRef = useRef<number>(0);
+	// Track the last _creationTime we've processed (following the Convex+Automerge pattern)
+	const lastCreationTimeRef = useRef<number>(0);
 
 	// Pending operations waiting to be sent to server
 	const pendingOpsRef = useRef<CanvasOperation[]>([]);
@@ -72,7 +77,7 @@ export function useCanvasOperations({
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const applyOpsMutation = useMutation(designOpsApi.applyOperations as any);
 
-	// Subscribe to remote operations
+	// Subscribe to remote operations using _creationTime for sync
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const remoteOps = useQuery(
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -80,7 +85,7 @@ export function useCanvasOperations({
 		designId
 			? {
 					designId,
-					sinceTimestamp: lastServerTimestampRef.current,
+					sinceCreationTime: lastCreationTimeRef.current,
 					excludeClientId: clientIdRef.current,
 				}
 			: "skip",
@@ -91,7 +96,7 @@ export function useCanvasOperations({
 		if (designId && initializedForDesignRef.current !== designId) {
 			setShapes(initialShapes);
 			setUndoStack([]);
-			lastServerTimestampRef.current = 0;
+			lastCreationTimeRef.current = 0;
 			initializedForDesignRef.current = designId;
 		}
 	}, [designId, initialShapes]);
@@ -100,18 +105,18 @@ export function useCanvasOperations({
 	useEffect(() => {
 		if (!remoteOps || remoteOps.length === 0) return;
 
-		const newOps = remoteOps.map((op: { operation: string }) => 
-			deserializeOperation(op.operation)
+		const newOps = remoteOps.map((op: { operation: string }) =>
+			deserializeOperation(op.operation),
 		);
 
 		setShapes((prev) => applyOperations(prev, newOps));
 
-		// Update the last processed timestamp
-		const maxTimestamp = Math.max(
-			...remoteOps.map((op: { serverTimestamp: number }) => op.serverTimestamp)
+		// Update the last seen _creationTime
+		const maxCreationTime = Math.max(
+			...remoteOps.map((op: { creationTime: number }) => op.creationTime),
 		);
-		if (maxTimestamp > lastServerTimestampRef.current) {
-			lastServerTimestampRef.current = maxTimestamp;
+		if (maxCreationTime > lastCreationTimeRef.current) {
+			lastCreationTimeRef.current = maxCreationTime;
 		}
 	}, [remoteOps]);
 
@@ -133,13 +138,13 @@ export function useCanvasOperations({
 				})),
 			});
 
-			// Update our timestamp to avoid reprocessing our own ops
-			if (result.serverTimestamp > lastServerTimestampRef.current) {
-				lastServerTimestampRef.current = result.serverTimestamp;
+			// Update our _creationTime cursor to avoid reprocessing our own ops
+			if (result.lastCreationTime > lastCreationTimeRef.current) {
+				lastCreationTimeRef.current = result.lastCreationTime;
 			}
 		} catch (error) {
 			console.error("Failed to apply operations:", error);
-			// Re-queue the operations for retry
+			// Re-queue the operations for retry (idempotency ensures safety)
 			pendingOpsRef.current = [...opsToSend, ...pendingOpsRef.current];
 		}
 	}, [designId, applyOpsMutation]);
@@ -276,4 +281,3 @@ export function useCanvasOperations({
 		isConnected: remoteOps !== undefined,
 	};
 }
-

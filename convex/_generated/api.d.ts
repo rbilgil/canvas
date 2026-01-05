@@ -9,6 +9,7 @@
  */
 
 import type * as canvas_ai from "../canvas_ai.js";
+import type * as designOperations from "../designOperations.js";
 import type * as designs from "../designs.js";
 import type * as images from "../images.js";
 import type * as projects from "../projects.js";
@@ -21,6 +22,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   canvas_ai: typeof canvas_ai;
+  designOperations: typeof designOperations;
   designs: typeof designs;
   images: typeof images;
   projects: typeof projects;
