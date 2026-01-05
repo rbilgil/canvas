@@ -485,8 +485,77 @@ function SingleDesignCanvas({
 						} else {
 							addShapeOp(cmd.shape);
 						}
+					} else if (cmd.tool === "changeColor") {
+						// Handle color changes from AI
+						const targetId = cmd.id || cmd.target || selectedId;
+						if (!targetId) continue;
+						const shape = shapes.find((s) => s.id === targetId);
+						if (!shape) continue;
+						const updates: Partial<CanvasShape> = {};
+						if (cmd.fill !== undefined) updates.fill = cmd.fill;
+						if (cmd.stroke !== undefined) updates.stroke = cmd.stroke;
+						if (Object.keys(updates).length > 0) {
+							updateShapeOp(targetId, shape, updates);
+						}
+					} else if (cmd.tool === "moveObject") {
+						// Handle move from AI
+						const targetId = cmd.id || cmd.target || selectedId;
+						if (!targetId) continue;
+						const shape = shapes.find((s) => s.id === targetId);
+						if (!shape) continue;
+						const dx = cmd.dx ?? 0;
+						const dy = cmd.dy ?? 0;
+						if (shape.type === "line") {
+							updateShapeOp(targetId, shape, {
+								x: shape.x + dx,
+								y: shape.y + dy,
+								x2: shape.x2 + dx,
+								y2: shape.y2 + dy,
+							} as Partial<CanvasShape>);
+						} else {
+							updateShapeOp(targetId, shape, {
+								x: shape.x + dx,
+								y: shape.y + dy,
+							});
+						}
+					} else if (cmd.tool === "resize") {
+						// Handle resize from AI
+						const targetId = cmd.id || cmd.target || selectedId;
+						if (!targetId) continue;
+						const shape = shapes.find((s) => s.id === targetId);
+						if (!shape) continue;
+						if (
+							shape.type === "rect" ||
+							shape.type === "ellipse" ||
+							shape.type === "image" ||
+							shape.type === "svg"
+						) {
+							const updates: { width?: number; height?: number } = {};
+							if (cmd.scale !== undefined) {
+								updates.width = shape.width * cmd.scale;
+								updates.height = shape.height * cmd.scale;
+							} else {
+								if (cmd.width !== undefined) updates.width = cmd.width;
+								if (cmd.height !== undefined) updates.height = cmd.height;
+							}
+							if (Object.keys(updates).length > 0) {
+								updateShapeOp(targetId, shape, updates as Partial<CanvasShape>);
+							}
+						}
+					} else if (cmd.tool === "generateSvg" && "svg" in cmd && cmd.svg) {
+						// Handle SVG generation from AI
+						const id = cmd.id || createShapeId("svg");
+						const newShape: CanvasShape = {
+							id,
+							type: "svg",
+							x: cmd.x ?? 40,
+							y: cmd.y ?? 40,
+							width: cmd.width ?? 100,
+							height: cmd.height ?? 100,
+							svg: cmd.svg,
+						};
+						addShapeOp(newShape);
 					}
-					// Other commands: apply directly for now
 				}
 			}
 
@@ -1548,7 +1617,8 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 		// Store undo functions per design
 		const undoFunctionsRef = useRef<Map<string, () => boolean>>(new Map());
 
-		// Track which design can undo
+		// Track which design can undo - using ref for synchronous comparison to prevent infinite loops
+		const canUndoMapRef = useRef<Map<string, boolean>>(new Map());
 		const [canUndoMap, setCanUndoMap] = useState<Map<string, boolean>>(
 			new Map(),
 		);
@@ -1574,15 +1644,19 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 
 		const handleCanUndoChange = useCallback(
 			(designId: string, canUndo: boolean) => {
-				setCanUndoMap((prev) => {
-					// Only update if the value actually changed
-					if (prev.get(designId) === canUndo) {
-						return prev;
-					}
-					const next = new Map(prev);
-					next.set(designId, canUndo);
-					return next;
-				});
+				// Use ref for synchronous comparison to prevent infinite loops
+				// The ref is checked BEFORE any state updates or parent callbacks
+				if (canUndoMapRef.current.get(designId) === canUndo) {
+					return; // No change - skip state update and parent callback entirely
+				}
+
+				// Update ref synchronously
+				canUndoMapRef.current.set(designId, canUndo);
+
+				// Update state for React rendering
+				setCanUndoMap(new Map(canUndoMapRef.current));
+
+				// Notify parent - only called when value actually changed
 				onUndoStackChange?.(designId, canUndo);
 			},
 			[onUndoStackChange],

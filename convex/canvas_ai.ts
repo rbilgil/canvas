@@ -1,38 +1,40 @@
 "use node";
 
-import { createOpenAI } from "@ai-sdk/openai";
-import { generateObject, streamObject } from "ai";
+import { type GoogleGenerativeAIProviderOptions, google } from "@ai-sdk/google";
+import { generateObject } from "ai";
 import { v } from "convex/values";
 import { z } from "zod";
 import { action } from "./_generated/server";
 
-const openai = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 function selectModel() {
-	const modelName = process.env.AI_MODEL || "gpt-5";
-	if (!process.env.OPENAI_API_KEY) {
-		throw new Error("Missing OPENAI_API_KEY");
+	const modelName = process.env.AI_MODEL || "gemini-3-flash";
+	if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+		throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY");
 	}
-	return openai(modelName);
+	return google(modelName);
 }
 
 // Zod schema for tool commands
-const MoveCommand = z.object({
-	tool: z.literal("moveObject"),
-	id: z.string().optional(),
-	target: z.string().optional(),
-	dx: z.number(),
-	dy: z.number(),
-});
+const MoveCommand = z
+	.object({
+		tool: z.literal("moveObject"),
+		id: z.string().optional(),
+		target: z.string().optional(),
+		dx: z.number(),
+		dy: z.number(),
+	})
+	.strict();
 
-const ResizeCommand = z.object({
-	tool: z.literal("resize"),
-	id: z.string().optional(),
-	target: z.string().optional(),
-	width: z.number().optional(),
-	height: z.number().optional(),
-	scale: z.number().optional(),
-});
+const ResizeCommand = z
+	.object({
+		tool: z.literal("resize"),
+		id: z.string().optional(),
+		target: z.string().optional(),
+		width: z.number().optional(),
+		height: z.number().optional(),
+		scale: z.number().optional(),
+	})
+	.strict();
 
 const hexColor = z
 	.string()
@@ -41,45 +43,55 @@ const hexColor = z
 		"HEX color like #RRGGBB or #RGB",
 	);
 
-const ChangeColorCommand = z.object({
-	tool: z.literal("changeColor"),
-	id: z.string().optional(),
-	target: z.string().optional(),
-	fill: hexColor.optional(),
-	stroke: hexColor.optional(),
-});
+const ChangeColorCommand = z
+	.object({
+		tool: z.literal("changeColor"),
+		id: z.string().optional(),
+		target: z.string().optional(),
+		fill: hexColor.optional(),
+		stroke: hexColor.optional(),
+	})
+	.strict();
 
-const GenerateSvgCommand = z.object({
-	tool: z.literal("generateSvg"),
-	id: z.string().optional(),
-	svg: z.string(),
-	x: z.number().optional(),
-	y: z.number().optional(),
-	width: z.number().optional(),
-	height: z.number().optional(),
-});
+const GenerateSvgCommand = z
+	.object({
+		tool: z.literal("generateSvg"),
+		id: z.string().optional(),
+		svg: z.string(),
+		x: z.number().optional(),
+		y: z.number().optional(),
+		width: z.number().optional(),
+		height: z.number().optional(),
+	})
+	.strict();
 
-const GenerateImageCommand = z.object({
-	tool: z.literal("generateImage"),
-	id: z.string().optional(),
-	prompt: z.string(),
-	x: z.number().optional(),
-	y: z.number().optional(),
-	width: z.number().optional(),
-	height: z.number().optional(),
-});
+const GenerateImageCommand = z
+	.object({
+		tool: z.literal("generateImage"),
+		id: z.string().optional(),
+		prompt: z.string(),
+		x: z.number().optional(),
+		y: z.number().optional(),
+		width: z.number().optional(),
+		height: z.number().optional(),
+	})
+	.strict();
 
-const EditImageCommand = z.object({
-	tool: z.literal("editImage"),
-	id: z.string().optional(),
-	prompt: z.string(),
-});
+const EditImageCommand = z
+	.object({
+		tool: z.literal("editImage"),
+		id: z.string().optional(),
+		prompt: z.string(),
+	})
+	.strict();
 
-const CombineSelectionCommand = z.object({
-	tool: z.literal("combineSelection"),
-});
+const CombineSelectionCommand = z
+	.object({
+		tool: z.literal("combineSelection"),
+	})
+	.strict();
 
-const CommandSchema = z.union([
+const CommandSchema = z.discriminatedUnion("tool", [
 	MoveCommand,
 	ResizeCommand,
 	ChangeColorCommand,
@@ -164,18 +176,21 @@ export const interpret = action({
 
 		// Stream object so we can log partial output as it arrives
 		const { object } = await generateObject({
-			model,
+			model: "google/gemini-3-flash",
 			system,
 			messages: [
 				{ role: "user", content: [{ type: "text", text: args.input }] },
 			],
-			schema: z.object({ commands: z.array(CommandSchema).default([]) }),
+			schema: z.object({ commands: z.array(CommandSchema) }).strict(),
 			temperature: 0.1,
 			maxRetries: 3,
 			providerOptions: {
-				openai: {
-					reasoningEffort: "minimal",
-				},
+				google: {
+					thinkingConfig: {
+						includeThoughts: false,
+						thinkingLevel: "minimal",
+					},
+				} satisfies GoogleGenerativeAIProviderOptions,
 			},
 		});
 
