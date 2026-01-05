@@ -33,7 +33,6 @@ export default function ProjectEditor() {
 
 	const project = useQuery(api.projects.getProject, { projectId });
 	const designs = useQuery(api.designs.getDesignsByProject, { projectId });
-	const updateDesignConfig = useMutation(api.designs.updateDesignConfig);
 	const addDesign = useMutation(api.designs.addDesign);
 
 	const [activeDesignId, setActiveDesignId] = useState<Id<"designs"> | null>(
@@ -49,9 +48,6 @@ export default function ProjectEditor() {
 	const [tool, setTool] = useState<Tool>("select");
 	const [canUndo, setCanUndo] = useState(false);
 
-	// Track pending changes per design for debounced saving
-	const pendingChangesRef = useRef<Map<string, CanvasShape[]>>(new Map());
-	const saveTimerRef = useRef<Map<string, number>>(new Map());
 	const canvasRef = useRef<DesignCanvasRef>(null);
 
 	// Set first design as active when designs load
@@ -60,35 +56,6 @@ export default function ProjectEditor() {
 			setActiveDesignId(designs[0]._id);
 		}
 	}, [designs, activeDesignId]);
-
-	// Debounced save handler
-	const handleShapesChange = useCallback(
-		(designId: string, shapes: CanvasShape[]) => {
-			pendingChangesRef.current.set(designId, shapes);
-
-			// Clear existing timer for this design
-			const existingTimer = saveTimerRef.current.get(designId);
-			if (existingTimer) {
-				window.clearTimeout(existingTimer);
-			}
-
-			// Set new timer
-			const timer = window.setTimeout(() => {
-				const shapesToSave = pendingChangesRef.current.get(designId);
-				if (shapesToSave) {
-					void updateDesignConfig({
-						designId: designId as Id<"designs">,
-						config: { shapes: shapesToSave },
-					});
-					pendingChangesRef.current.delete(designId);
-				}
-				saveTimerRef.current.delete(designId);
-			}, 1000);
-
-			saveTimerRef.current.set(designId, timer);
-		},
-		[updateDesignConfig],
-	);
 
 	// Handle undo stack changes from canvas
 	const handleUndoStackChange = useCallback(
@@ -106,13 +73,6 @@ export default function ProjectEditor() {
 			setCanUndo(canvasRef.current.canUndo());
 		}
 	}, [activeDesignId]);
-
-	// Cleanup timers on unmount
-	useEffect(() => {
-		return () => {
-			saveTimerRef.current.forEach((timer) => window.clearTimeout(timer));
-		};
-	}, []);
 
 	const handleAddDesign = async () => {
 		if (isAdding) return;
@@ -240,7 +200,7 @@ export default function ProjectEditor() {
 				canUndo={canUndo}
 			/>
 
-			{/* Canvas area with horizontal scroll */}
+			{/* Canvas area - operations are saved directly via CRDT */}
 			{designsData.length > 0 && (
 				<DesignCanvas
 					ref={canvasRef}
@@ -249,7 +209,6 @@ export default function ProjectEditor() {
 					onActivate={(designId) =>
 						setActiveDesignId(designId as Id<"designs">)
 					}
-					onShapesChange={handleShapesChange}
 					tool={tool}
 					onToolChange={setTool}
 					onUndoStackChange={handleUndoStackChange}

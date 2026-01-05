@@ -1,6 +1,6 @@
 "use client";
 
-import { useAction } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import {
 	forwardRef,
 	useCallback,
@@ -11,11 +11,18 @@ import {
 	useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-	applyCommandsToState,
-	invertCommands,
-} from "@/components/canvas/commands";
 import { runLassoEdit as externalRunLassoEdit } from "@/components/canvas/imageLasso";
+import {
+	applyOperations,
+	type CanvasOperation,
+	createAddShapeOp,
+	createDeleteShapeOp,
+	createUpdateShapeOp,
+	deserializeOperation,
+	getShapeChanges,
+	invertOperation,
+	serializeOperation,
+} from "@/components/canvas/operations";
 import { PropertiesPanel } from "@/components/canvas/PropertiesPanel";
 import { ShapeView } from "@/components/canvas/ShapeView";
 import {
@@ -40,6 +47,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
+
+// Type for the designOperations API (will be generated after running convex dev)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const designOpsApi = (api as any).designOperations as {
+	applyOperations: typeof api.designs.updateDesignConfig;
+	getOperationsSince: typeof api.designs.getDesignsByProject;
+};
 
 export interface DesignData {
 	id: string;
@@ -53,7 +68,6 @@ export interface DesignCanvasProps {
 	designs: DesignData[];
 	activeDesignId: string | null;
 	onActivate: (designId: string) => void;
-	onShapesChange?: (designId: string, shapes: CanvasShape[]) => void;
 	tool: Tool;
 	onToolChange: (tool: Tool) => void;
 	onUndoStackChange?: (designId: string, canUndo: boolean) => void;
@@ -104,6 +118,11 @@ function getShapeBounds(s: CanvasShape): {
 	};
 }
 
+// Generate a unique client ID for this session
+function generateClientId(): string {
+	return `client_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
 // Internal component for a single design canvas
 interface SingleDesignCanvasProps {
 	design: DesignData;
@@ -111,9 +130,8 @@ interface SingleDesignCanvasProps {
 	onActivate: () => void;
 	tool: Tool;
 	onToolChange: (tool: Tool) => void;
-	onShapesChange?: (shapes: CanvasShape[]) => void;
-	undoStackRef: React.MutableRefObject<Map<string, Array<Array<AnyCommand>>>>;
-	onUndoStackChange?: (canUndo: boolean) => void;
+	clientId: string;
+	onCanUndoChange?: (canUndo: boolean) => void;
 }
 
 function SingleDesignCanvas({
@@ -122,15 +140,12 @@ function SingleDesignCanvas({
 	onActivate,
 	tool,
 	onToolChange,
-	onShapesChange,
-	undoStackRef,
-	onUndoStackChange,
+	clientId,
+	onCanUndoChange,
 }: SingleDesignCanvasProps) {
+	// Local shapes state for immediate UI feedback
 	const [shapes, setShapes] = useState<CanvasShape[]>(design.initialShapes);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
-
-	// Track which design we've initialized to avoid re-syncing from server on our own saves
-	const initializedForDesignRef = useRef<string | null>(null);
 	const [selectedIds, setSelectedIds] = useState<Array<string>>([]);
 	const [isPointerDown, setIsPointerDown] = useState(false);
 	const [draftId, setDraftId] = useState<string | null>(null);
@@ -146,22 +161,37 @@ function SingleDesignCanvas({
 		originals: Record<string, CanvasShape>;
 	}>(null);
 
+	// Track interaction state for operation creation
 	const interactionOriginalRef = useRef<CanvasShape | null>(null);
 	const createdShapeIdRef = useRef<string | null>(null);
 
-	// Get/set undo stack for this design
-	const getUndoStack = useCallback(() => {
-		return undoStackRef.current.get(design.id) ?? [];
-	}, [design.id, undoStackRef]);
+	// Operation-based undo stack
+	const [undoStack, setUndoStack] = useState<CanvasOperation[]>([]);
 
-	const setUndoStack = useCallback(
-		(updater: (prev: Array<Array<AnyCommand>>) => Array<Array<AnyCommand>>) => {
-			const current = undoStackRef.current.get(design.id) ?? [];
-			const next = updater(current);
-			undoStackRef.current.set(design.id, next);
-			onUndoStackChange?.(next.length > 0);
-		},
-		[design.id, undoStackRef, onUndoStackChange],
+	// Track which design we've initialized
+	const initializedForDesignRef = useRef<string | null>(null);
+
+	// Pending operations to send to server
+	const pendingOpsRef = useRef<CanvasOperation[]>([]);
+	const flushTimeoutRef = useRef<number | null>(null);
+	const lastServerTimestampRef = useRef<number>(0);
+
+	// Convex mutations - using type assertion until types are regenerated
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const applyOpsMutation = useMutation(designOpsApi.applyOperations as any);
+
+	// Subscribe to remote operations (from other clients)
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	const remoteOps = useQuery(
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		designOpsApi.getOperationsSince as any,
+		design.id
+			? {
+					designId: design.id as Id<"designs">,
+					sinceTimestamp: lastServerTimestampRef.current,
+					excludeClientId: clientId,
+				}
+			: "skip",
 	);
 
 	// Text editing overlay state
@@ -208,28 +238,160 @@ function SingleDesignCanvas({
 		height: number;
 	}>(null);
 
-	// Notify parent of shape changes (but skip initial notification to avoid triggering saves)
-	const hasNotifiedRef = useRef(false);
-	useEffect(() => {
-		if (hasNotifiedRef.current) {
-			onShapesChange?.(shapes);
-		} else {
-			hasNotifiedRef.current = true;
-		}
-	}, [shapes, onShapesChange]);
-
-	// Only sync from initialShapes when switching to a different design
-	// This prevents server updates from overwriting local state during editing
+	// Initialize shapes when design changes
 	useEffect(() => {
 		if (initializedForDesignRef.current !== design.id) {
 			setShapes(design.initialShapes);
+			setUndoStack([]);
+			lastServerTimestampRef.current = 0;
 			initializedForDesignRef.current = design.id;
-			hasNotifiedRef.current = false; // Reset notification flag for new design
 		}
 	}, [design.id, design.initialShapes]);
 
+	// Apply remote operations when they arrive
+	useEffect(() => {
+		if (!remoteOps || remoteOps.length === 0) return;
+
+		const newOps = remoteOps.map(
+			(op: { operation: string; serverTimestamp: number }) =>
+				deserializeOperation(op.operation),
+		);
+		setShapes((prev) => applyOperations(prev, newOps));
+
+		// Update the last processed timestamp
+		const maxTimestamp = Math.max(
+			...remoteOps.map((op: { serverTimestamp: number }) => op.serverTimestamp),
+		);
+		if (maxTimestamp > lastServerTimestampRef.current) {
+			lastServerTimestampRef.current = maxTimestamp;
+		}
+	}, [remoteOps]);
+
+	// Notify parent of undo stack changes
+	useEffect(() => {
+		onCanUndoChange?.(undoStack.length > 0);
+	}, [undoStack.length, onCanUndoChange]);
+
+	// Flush pending operations to server
+	const flushPendingOps = useCallback(async () => {
+		if (!design.id || pendingOpsRef.current.length === 0) return;
+
+		const opsToSend = pendingOpsRef.current;
+		pendingOpsRef.current = [];
+
+		try {
+			const result = await applyOpsMutation({
+				designId: design.id as Id<"designs">,
+				clientId,
+				operations: opsToSend.map((op) => ({
+					operationId: op.id,
+					operation: serializeOperation(op),
+					timestamp: op.timestamp,
+				})),
+			});
+
+			// Update our timestamp to avoid reprocessing our own ops
+			if (result.serverTimestamp > lastServerTimestampRef.current) {
+				lastServerTimestampRef.current = result.serverTimestamp;
+			}
+		} catch (error) {
+			console.error("Failed to apply operations:", error);
+			// Re-queue the operations for retry
+			pendingOpsRef.current = [...opsToSend, ...pendingOpsRef.current];
+		}
+	}, [design.id, clientId, applyOpsMutation]);
+
+	// Schedule a flush of pending operations
+	const scheduleFlush = useCallback(() => {
+		if (flushTimeoutRef.current) {
+			clearTimeout(flushTimeoutRef.current);
+		}
+		// Debounce: wait 50ms before flushing (fast enough to feel instant)
+		flushTimeoutRef.current = window.setTimeout(() => {
+			void flushPendingOps();
+			flushTimeoutRef.current = null;
+		}, 50);
+	}, [flushPendingOps]);
+
+	// Apply an operation locally and queue for server
+	const applyOperation = useCallback(
+		(op: CanvasOperation, pushToUndo = true) => {
+			// Apply locally (instant)
+			setShapes((prev) => applyOperations(prev, [op]));
+
+			// Add inverse to undo stack
+			if (pushToUndo) {
+				const inverse = invertOperation(clientId, op);
+				setUndoStack((prev) => [...prev, inverse]);
+			}
+
+			// Queue for server
+			pendingOpsRef.current.push(op);
+			scheduleFlush();
+		},
+		[clientId, scheduleFlush],
+	);
+
+	// Operation-based shape manipulation methods
+	const addShapeOp = useCallback(
+		(shape: CanvasShape) => {
+			const op = createAddShapeOp(clientId, shape);
+			applyOperation(op);
+		},
+		[clientId, applyOperation],
+	);
+
+	const updateShapeOp = useCallback(
+		(
+			shapeId: string,
+			currentShape: CanvasShape,
+			updates: Partial<CanvasShape>,
+		) => {
+			const { updates: actualUpdates, previousValues } = getShapeChanges(
+				currentShape,
+				{ ...currentShape, ...updates } as CanvasShape,
+			);
+			if (Object.keys(actualUpdates).length === 0) return;
+
+			const op = createUpdateShapeOp(
+				clientId,
+				shapeId,
+				actualUpdates,
+				previousValues,
+			);
+			applyOperation(op);
+		},
+		[clientId, applyOperation],
+	);
+
+	const deleteShapeOp = useCallback(
+		(shape: CanvasShape) => {
+			const op = createDeleteShapeOp(clientId, shape);
+			applyOperation(op);
+		},
+		[clientId, applyOperation],
+	);
+
+	// Undo the last operation
+	const undo = useCallback((): boolean => {
+		if (undoStack.length === 0) return false;
+
+		const inverseOp = undoStack[undoStack.length - 1];
+		setUndoStack((prev) => prev.slice(0, -1));
+
+		// Apply the inverse operation (don't push to undo stack)
+		setShapes((prev) => applyOperations(prev, [inverseOp]));
+
+		// Queue for server
+		pendingOpsRef.current.push(inverseOp);
+		scheduleFlush();
+
+		return true;
+	}, [undoStack, scheduleFlush]);
+
+	// For AI commands that need the old command system
 	const applyCommandGroup = useCallback(
-		(commands: Array<AnyCommand>, opts?: { recordUndo?: boolean }) => {
+		(commands: Array<AnyCommand>, _opts?: { recordUndo?: boolean }) => {
 			const imageCommands = commands.filter(
 				(c) =>
 					c.tool === "generateImage" ||
@@ -244,13 +406,21 @@ function SingleDesignCanvas({
 			);
 
 			if (restCommands.length > 0) {
-				setShapes((prev) => {
-					if (opts?.recordUndo) {
-						const inverse = invertCommands(restCommands, prev, selectedId);
-						setUndoStack((stack) => [...stack, inverse]);
+				// Convert commands to operations where possible
+				for (const cmd of restCommands) {
+					if (cmd.tool === "deleteObject" && "id" in cmd && cmd.id) {
+						const shape = shapes.find((s) => s.id === cmd.id);
+						if (shape) deleteShapeOp(shape);
+					} else if (cmd.tool === "replaceShape" && "shape" in cmd) {
+						const existingShape = shapes.find((s) => s.id === cmd.shape.id);
+						if (existingShape) {
+							updateShapeOp(cmd.shape.id, existingShape, cmd.shape);
+						} else {
+							addShapeOp(cmd.shape);
+						}
 					}
-					return applyCommandsToState(prev, restCommands, selectedId);
-				});
+					// Other commands: apply directly for now
+				}
 			}
 
 			if (imageCommands.length > 0) {
@@ -264,22 +434,16 @@ function SingleDesignCanvas({
 								height: cmd.height,
 							});
 							const id = cmd.id || createShapeId("img");
-							setShapes((prev) => [
-								...prev,
-								{
-									id,
-									type: "image",
-									x: cmd.x ?? 40,
-									y: cmd.y ?? 40,
-									width: res.width,
-									height: res.height,
-									href: res.dataUrl,
-								} as ImageShape,
-							]);
-							setUndoStack((stack) => [
-								...stack,
-								[{ tool: "deleteObject", id }],
-							]);
+							const newShape: ImageShape = {
+								id,
+								type: "image",
+								x: cmd.x ?? 40,
+								y: cmd.y ?? 40,
+								width: res.width,
+								height: res.height,
+								href: res.dataUrl,
+							};
+							addShapeOp(newShape);
 						} else if (cmd.tool === "editImage") {
 							const id = cmd.id || selectedId;
 							if (!id || !cmd.prompt) continue;
@@ -291,16 +455,7 @@ function SingleDesignCanvas({
 								dataUrl: before.href,
 								prompt: cmd.prompt,
 							});
-							const snapshot = JSON.parse(JSON.stringify(before)) as ImageShape;
-							setUndoStack((stack) => [
-								...stack,
-								[{ tool: "replaceShape", shape: snapshot }],
-							]);
-							setShapes((prev) =>
-								prev.map((s) =>
-									s.id === before.id ? { ...before, href: res.dataUrl } : s,
-								),
-							);
+							updateShapeOp(before.id, before, { href: res.dataUrl });
 						} else if (cmd.tool === "combineSelection") {
 							const ids = selectedIds.length
 								? selectedIds.slice()
@@ -440,20 +595,11 @@ function SingleDesignCanvas({
 									height: Math.max(1, Math.ceil(bbox.height)),
 									href: fused.dataUrl,
 								};
-								setShapes((prev) => [
-									...prev.filter((s) => !ids.includes(s.id)),
-									combined,
-								]);
-								setUndoStack((stack) => [
-									...stack,
-									[
-										{ tool: "deleteObject", id },
-										...originals.map((shape) => ({
-											tool: "replaceShape" as const,
-											shape: JSON.parse(JSON.stringify(shape)) as CanvasShape,
-										})),
-									],
-								]);
+								// Delete originals and add combined
+								for (const orig of originals) {
+									deleteShapeOp(orig);
+								}
+								addShapeOp(combined);
 								setSelectedId(id);
 								setSelectedIds([id]);
 							} catch (err) {
@@ -471,7 +617,9 @@ function SingleDesignCanvas({
 			generateCanvasImage,
 			editCanvasImage,
 			fuseCanvasImages,
-			setUndoStack,
+			addShapeOp,
+			updateShapeOp,
+			deleteShapeOp,
 		],
 	);
 
@@ -483,13 +631,7 @@ function SingleDesignCanvas({
 			const isUndo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z";
 			if (isUndo) {
 				e.preventDefault();
-				const stack = getUndoStack();
-				if (stack.length === 0) return;
-				const next = stack.slice(0, -1);
-				const inverse = stack[stack.length - 1];
-				undoStackRef.current.set(design.id, next);
-				onUndoStackChange?.(next.length > 0);
-				setShapes((prev) => applyCommandsToState(prev, inverse, selectedId));
+				undo();
 				return;
 			}
 			if (e.key === "Backspace" || e.key === "Delete") {
@@ -500,34 +642,17 @@ function SingleDesignCanvas({
 					: selectedId
 						? [selectedId]
 						: [];
-				const priors = shapes.filter((s) => idsToDelete.includes(s.id));
-				if (priors.length) {
-					setUndoStack((stack) => [
-						...stack,
-						priors.map((p) => ({
-							tool: "replaceShape",
-							shape: JSON.parse(JSON.stringify(p)),
-						})),
-					]);
+				for (const id of idsToDelete) {
+					const shape = shapes.find((s) => s.id === id);
+					if (shape) deleteShapeOp(shape);
 				}
-				setShapes((prev) => prev.filter((s) => !idsToDelete.includes(s.id)));
 				setSelectedId(null);
 				setSelectedIds([]);
 			}
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
-	}, [
-		isActive,
-		selectedId,
-		selectedIds,
-		shapes,
-		getUndoStack,
-		setUndoStack,
-		design.id,
-		undoStackRef,
-		onUndoStackChange,
-	]);
+	}, [isActive, selectedId, selectedIds, shapes, undo, deleteShapeOp]);
 
 	const selectedShape = useMemo(() => {
 		if (selectedIds.length === 1) {
@@ -549,6 +674,7 @@ function SingleDesignCanvas({
 		);
 	}
 
+	// Local shape manipulation (for immediate UI feedback during gestures)
 	const setShapeById = useCallback(
 		(id: string, updater: (s: CanvasShape) => CanvasShape) => {
 			setShapes((prev) => prev.map((s) => (s.id === id ? updater(s) : s)));
@@ -594,6 +720,7 @@ function SingleDesignCanvas({
 
 		if (tool === "draw-rect") {
 			const rect = createRect({ x, y, fill: "#94a3b833" });
+			// Add locally for immediate feedback (draft)
 			setShapes((prev) => [...prev, rect]);
 			setDraftId(rect.id);
 			setSelectedId(rect.id);
@@ -628,6 +755,7 @@ function SingleDesignCanvas({
 			setTextEditorValue("");
 			setTextEditorPos({ left: x, top: y, fontSize: 20 });
 			onToolChange("select");
+			createdShapeIdRef.current = text.id;
 			requestAnimationFrame(() => {
 				textEditorRef.current?.focus();
 			});
@@ -774,14 +902,35 @@ function SingleDesignCanvas({
 		setIsPointerDown(false);
 		setActiveHandle(null);
 
+		// Commit group drag as operations
 		if (groupDragRef.current) {
 			const originals = groupDragRef.current.originals;
-			const cmds = Object.values(originals).map((shape) => ({
-				tool: "replaceShape" as const,
-				shape: JSON.parse(JSON.stringify(shape)) as CanvasShape,
-			}));
-			if (cmds.length)
-				setUndoStack((stack) => [...stack, cmds as Array<AnyCommand>]);
+			for (const [id, originalShape] of Object.entries(originals)) {
+				const currentShape = shapes.find((s) => s.id === id);
+				if (currentShape && originalShape) {
+					// Create update operation for the move
+					const { updates, previousValues } = getShapeChanges(
+						originalShape,
+						currentShape,
+					);
+					if (Object.keys(updates).length > 0) {
+						const op = createUpdateShapeOp(
+							clientId,
+							id,
+							updates,
+							previousValues,
+						);
+						applyOperation(op, true);
+						// Remove the shape from local state since applyOperation will add it back
+						// Actually, since we already moved it locally, just queue the op
+						// We need to NOT re-apply locally since it's already done
+						// Let's adjust: just queue without local apply
+						setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+						pendingOpsRef.current.push(op);
+					}
+				}
+			}
+			scheduleFlush();
 			groupDragRef.current = null;
 		}
 
@@ -818,6 +967,7 @@ function SingleDesignCanvas({
 			setLassoPoints([]);
 		}
 
+		// Commit draft shape as operation
 		if (draftId) {
 			const draft = shapes.find((s) => s.id === draftId);
 			if (draft) {
@@ -825,6 +975,7 @@ function SingleDesignCanvas({
 					(draft.type === "rect" || draft.type === "ellipse") &&
 					(draft.width < 2 || draft.height < 2)
 				) {
+					// Too small, remove without committing
 					removeShapeById(draftId);
 					setSelectedId(null);
 					setSelectedIds([]);
@@ -832,17 +983,18 @@ function SingleDesignCanvas({
 					draft.type === "line" &&
 					Math.hypot(draft.x2 - draft.x, draft.y2 - draft.y) < 2
 				) {
+					// Too small, remove without committing
 					removeShapeById(draftId);
 					setSelectedId(null);
 					setSelectedIds([]);
 				} else {
-					const createdId = createdShapeIdRef.current;
-					if (createdId) {
-						setUndoStack((stack) => [
-							...stack,
-							[{ tool: "deleteObject", id: createdId }],
-						]);
-					}
+					// Valid shape - commit as operation
+					// The shape is already in local state, so we just need to send the operation
+					// and add to undo stack
+					const op = createAddShapeOp(clientId, draft);
+					setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+					pendingOpsRef.current.push(op);
+					scheduleFlush();
 				}
 			}
 			setDraftId(null);
@@ -855,16 +1007,22 @@ function SingleDesignCanvas({
 			}
 		}
 
+		// Commit resize as operation
 		if (!draftId && interactionOriginalRef.current) {
 			const original = interactionOriginalRef.current;
 			const current = shapes.find((s) => s.id === original.id);
 			if (current) {
-				const changed = JSON.stringify(original) !== JSON.stringify(current);
-				if (changed) {
-					setUndoStack((stack) => [
-						...stack,
-						[{ tool: "replaceShape", shape: original }],
-					]);
+				const { updates, previousValues } = getShapeChanges(original, current);
+				if (Object.keys(updates).length > 0) {
+					const op = createUpdateShapeOp(
+						clientId,
+						original.id,
+						updates,
+						previousValues,
+					);
+					setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+					pendingOpsRef.current.push(op);
+					scheduleFlush();
 				}
 			}
 		}
@@ -881,11 +1039,11 @@ function SingleDesignCanvas({
 			await externalRunLassoEdit(imageId, points, prompt, {
 				shapes,
 				setShapes,
-				setUndoStack,
+				setUndoStack: () => {}, // Undo handled differently now
 				editCanvasImage,
 			});
 		},
-		[shapes, editCanvasImage, setUndoStack],
+		[shapes, editCanvasImage],
 	);
 
 	const onShapePointerDown = (
@@ -939,22 +1097,54 @@ function SingleDesignCanvas({
 	const commitTextEdit = useCallback(() => {
 		if (!editingTextId) return;
 		const value = textEditorValue.trim();
+		const currentShape = shapes.find((s) => s.id === editingTextId);
+
 		if (value.length === 0) {
+			// Empty text - don't commit, just remove locally
 			removeShapeById(editingTextId);
 			setSelectedId(null);
-		} else {
-			setShapeById(editingTextId, (s) =>
-				s.type === "text" ? { ...s, text: value } : s,
-			);
+		} else if (currentShape) {
+			// Update text and commit as operation
+			const updatedShape = { ...currentShape, text: value } as CanvasShape;
+			setShapeById(editingTextId, () => updatedShape);
+
+			// If this was a new shape, commit as add
+			if (createdShapeIdRef.current === editingTextId) {
+				const op = createAddShapeOp(clientId, updatedShape);
+				setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+				pendingOpsRef.current.push(op);
+				scheduleFlush();
+				createdShapeIdRef.current = null;
+			} else {
+				// Existing shape, commit as update
+				updateShapeOp(editingTextId, currentShape, {
+					text: value,
+				} as Partial<CanvasShape>);
+			}
 		}
 		setEditingTextId(null);
 		setTextEditorValue("");
-	}, [editingTextId, removeShapeById, setShapeById, textEditorValue]);
+	}, [
+		editingTextId,
+		textEditorValue,
+		shapes,
+		removeShapeById,
+		setShapeById,
+		clientId,
+		scheduleFlush,
+		updateShapeOp,
+	]);
 
 	const cancelTextEdit = useCallback(() => {
+		if (editingTextId && createdShapeIdRef.current === editingTextId) {
+			// Was a new shape, remove it
+			removeShapeById(editingTextId);
+			setSelectedId(null);
+			createdShapeIdRef.current = null;
+		}
 		setEditingTextId(null);
 		setTextEditorValue("");
-	}, []);
+	}, [editingTextId, removeShapeById]);
 
 	// Calculate scale to fit canvas in container
 	const containerPadding = 40;
@@ -968,6 +1158,28 @@ function SingleDesignCanvas({
 	const displayWidth = design.width * scale;
 	const displayHeight = design.height * scale;
 
+	// Cleanup on unmount
+	useEffect(() => {
+		return () => {
+			if (flushTimeoutRef.current) {
+				clearTimeout(flushTimeoutRef.current);
+			}
+		};
+	}, []);
+
+	// Expose undo method for parent
+	useEffect(() => {
+		// Store undo method on a ref that parent can access
+		(window as unknown as Record<string, unknown>)[
+			`__canvas_undo_${design.id}`
+		] = undo;
+		return () => {
+			delete (window as unknown as Record<string, unknown>)[
+				`__canvas_undo_${design.id}`
+			];
+		};
+	}, [design.id, undo]);
+
 	return (
 		<div className="flex-shrink-0">
 			<div className="mb-2 flex items-center gap-2">
@@ -978,8 +1190,9 @@ function SingleDesignCanvas({
 					{design.width} × {design.height}
 				</span>
 			</div>
-			<div
-				className={`relative bg-slate-200 dark:bg-slate-800 rounded-lg overflow-hidden ${
+			<button
+				type="button"
+				className={`relative bg-slate-200 dark:bg-slate-800 rounded-lg overflow-hidden block text-left ${
 					isActive ? "ring-2 ring-violet-500" : "opacity-60"
 				}`}
 				style={{
@@ -992,19 +1205,33 @@ function SingleDesignCanvas({
 					<div className="absolute right-2 top-2 z-20">
 						<PropertiesPanel
 							selectedShape={selectedShape}
-							setShapeById={setShapeById}
-							setUndoSnapshot={(shapeId: string) => {
-								const prev = shapes.find((s) => s.id === shapeId);
-								if (prev)
-									setUndoStack((stack) => [
-										...stack,
-										[
-											{
-												tool: "replaceShape",
-												shape: JSON.parse(JSON.stringify(prev)),
-											},
-										],
+							setShapeById={(id, updater) => {
+								const currentShape = shapes.find((s) => s.id === id);
+								if (!currentShape) return;
+								const updatedShape = updater(currentShape);
+								// Create update operation
+								const { updates, previousValues } = getShapeChanges(
+									currentShape,
+									updatedShape,
+								);
+								if (Object.keys(updates).length > 0) {
+									setShapeById(id, () => updatedShape);
+									const op = createUpdateShapeOp(
+										clientId,
+										id,
+										updates,
+										previousValues,
+									);
+									setUndoStack((prev) => [
+										...prev,
+										invertOperation(clientId, op),
 									]);
+									pendingOpsRef.current.push(op);
+									scheduleFlush();
+								}
+							}}
+							setUndoSnapshot={() => {
+								// No longer needed - undo handled by operations
 							}}
 						/>
 					</div>
@@ -1040,22 +1267,16 @@ function SingleDesignCanvas({
 										height: imgH,
 									} = await readImageFile(file);
 									const id = createShapeId("img");
-									setShapes((prev) => [
-										...prev,
-										{
-											id,
-											type: "image",
-											x,
-											y,
-											width: Math.min(imgW, 512),
-											height: Math.min(imgH, 512),
-											href: dataUrl,
-										} as ImageShape,
-									]);
-									setUndoStack((stack) => [
-										...stack,
-										[{ tool: "deleteObject", id }],
-									]);
+									const newShape: ImageShape = {
+										id,
+										type: "image",
+										x,
+										y,
+										width: Math.min(imgW, 512),
+										height: Math.min(imgH, 512),
+										href: dataUrl,
+									};
+									addShapeOp(newShape);
 									setSelectedId(id);
 									setSelectedIds([id]);
 								} catch {
@@ -1153,7 +1374,7 @@ function SingleDesignCanvas({
 						}}
 					/>
 				)}
-			</div>
+			</button>
 
 			{/* Right-click command prompt */}
 			{rcOpen &&
@@ -1250,19 +1471,18 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			designs,
 			activeDesignId,
 			onActivate,
-			onShapesChange,
 			tool,
 			onToolChange,
 			onUndoStackChange,
 		},
 		ref,
 	) {
+		// Shared client ID for all canvases
+		const clientIdRef = useRef<string>(generateClientId());
+
 		// Store shapes per design for retrieval
 		const shapesMapRef = useRef<Map<string, CanvasShape[]>>(new Map());
-		// Store undo stacks per design
-		const undoStackRef = useRef<Map<string, Array<Array<AnyCommand>>>>(
-			new Map(),
-		);
+
 		// Track which design can undo
 		const [canUndoMap, setCanUndoMap] = useState<Map<string, boolean>>(
 			new Map(),
@@ -1275,19 +1495,14 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			},
 			undo: () => {
 				if (!activeDesignId) return;
-				const stack = undoStackRef.current.get(activeDesignId) ?? [];
-				if (stack.length === 0) return;
-				// Undo is handled by keyboard shortcut in SingleDesignCanvas
-				// This is a fallback - dispatch a keyboard event
-				const event = new KeyboardEvent("keydown", {
-					key: "z",
-					ctrlKey: true,
-					bubbles: true,
-				});
-				window.dispatchEvent(event);
+				// Call the undo function stored on window
+				const undoFn = (window as unknown as Record<string, unknown>)[
+					`__canvas_undo_${activeDesignId}`
+				] as (() => boolean) | undefined;
+				if (undoFn) undoFn();
 			},
 			resetView: () => {
-				// Reset view clears selection - handled by parent if needed
+				// Reset view - could clear selection
 			},
 			canUndo: () => {
 				if (!activeDesignId) return false;
@@ -1295,15 +1510,7 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			},
 		}));
 
-		const handleShapesChange = useCallback(
-			(designId: string, shapes: CanvasShape[]) => {
-				shapesMapRef.current.set(designId, shapes);
-				onShapesChange?.(designId, shapes);
-			},
-			[onShapesChange],
-		);
-
-		const handleUndoStackChange = useCallback(
+		const handleCanUndoChange = useCallback(
 			(designId: string, canUndo: boolean) => {
 				setCanUndoMap((prev) => {
 					const next = new Map(prev);
@@ -1326,10 +1533,9 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 							onActivate={() => onActivate(design.id)}
 							tool={tool}
 							onToolChange={onToolChange}
-							onShapesChange={(shapes) => handleShapesChange(design.id, shapes)}
-							undoStackRef={undoStackRef}
-							onUndoStackChange={(canUndo) =>
-								handleUndoStackChange(design.id, canUndo)
+							clientId={clientIdRef.current}
+							onCanUndoChange={(canUndo) =>
+								handleCanUndoChange(design.id, canUndo)
 							}
 						/>
 					))}
