@@ -155,12 +155,12 @@ function generateClientId(): string {
 interface SingleDesignCanvasProps {
 	design: DesignData;
 	isActive: boolean;
-	onActivate: () => void;
+	onActivate: (designId: string) => void;
 	tool: Tool;
 	onToolChange: (tool: Tool) => void;
 	clientId: string;
-	onCanUndoChange?: (canUndo: boolean) => void;
-	registerUndo?: (undoFn: () => boolean) => void;
+	onCanUndoChange?: (designId: string, canUndo: boolean) => void;
+	registerUndo?: (designId: string, undoFn: () => boolean) => void;
 }
 
 function SingleDesignCanvas({
@@ -329,8 +329,8 @@ function SingleDesignCanvas({
 
 	// Notify parent of undo stack changes
 	useEffect(() => {
-		onCanUndoChange?.(undoStack.length > 0);
-	}, [undoStack.length, onCanUndoChange]);
+		onCanUndoChange?.(design.id, undoStack.length > 0);
+	}, [design.id, undoStack.length, onCanUndoChange]);
 
 	// Flush pending operations to server
 	// Following the sync pattern from: https://stack.convex.dev/automerge-and-convex
@@ -779,7 +779,7 @@ function SingleDesignCanvas({
 
 	const handlePointerDown = (e: React.PointerEvent) => {
 		if (e.button !== 0) return;
-		onActivate();
+		onActivate(design.id);
 		const { x, y } = svgPoint(e);
 		setIsPointerDown(true);
 		interactionOriginalRef.current = null;
@@ -838,7 +838,7 @@ function SingleDesignCanvas({
 
 	const handleContextMenu = (e: React.MouseEvent) => {
 		e.preventDefault();
-		onActivate();
+		onActivate(design.id);
 		setRcOpen(true);
 		setRcBusy(false);
 		setRcText("");
@@ -1118,7 +1118,7 @@ function SingleDesignCanvas({
 	) => {
 		e.stopPropagation();
 		if (e.button !== 0) return;
-		onActivate();
+		onActivate(design.id);
 		setIsPointerDown(true);
 		if (!selectedIds.includes(shape.id)) {
 			setSelectedIds([shape.id]);
@@ -1239,8 +1239,8 @@ function SingleDesignCanvas({
 
 	// Register undo method with parent
 	useEffect(() => {
-		registerUndo?.(undo);
-	}, [undo, registerUndo]);
+		registerUndo?.(design.id, undo);
+	}, [design.id, undo, registerUndo]);
 
 	return (
 		<div className="flex-shrink-0">
@@ -1261,7 +1261,7 @@ function SingleDesignCanvas({
 					width: displayWidth + containerPadding,
 					height: displayHeight + containerPadding,
 				}}
-				onClick={onActivate}
+				onClick={() => onActivate(design.id)}
 			>
 				{isActive && (
 					<div className="absolute right-2 top-2 z-20">
@@ -1575,6 +1575,10 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 		const handleCanUndoChange = useCallback(
 			(designId: string, canUndo: boolean) => {
 				setCanUndoMap((prev) => {
+					// Only update if the value actually changed
+					if (prev.get(designId) === canUndo) {
+						return prev;
+					}
 					const next = new Map(prev);
 					next.set(designId, canUndo);
 					return next;
@@ -1582,6 +1586,14 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 				onUndoStackChange?.(designId, canUndo);
 			},
 			[onUndoStackChange],
+		);
+
+		// Stable callback for registering undo functions
+		const handleRegisterUndo = useCallback(
+			(designId: string, undoFn: () => boolean) => {
+				undoFunctionsRef.current.set(designId, undoFn);
+			},
+			[],
 		);
 
 		return (
@@ -1592,16 +1604,12 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 							key={design.id}
 							design={design}
 							isActive={activeDesignId === design.id}
-							onActivate={() => onActivate(design.id)}
+							onActivate={onActivate}
 							tool={tool}
 							onToolChange={onToolChange}
 							clientId={clientIdRef.current}
-							onCanUndoChange={(canUndo) =>
-								handleCanUndoChange(design.id, canUndo)
-							}
-							registerUndo={(undoFn) => {
-								undoFunctionsRef.current.set(design.id, undoFn);
-							}}
+							onCanUndoChange={handleCanUndoChange}
+							registerUndo={handleRegisterUndo}
 						/>
 					))}
 				</div>

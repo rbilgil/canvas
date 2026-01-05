@@ -11,7 +11,17 @@
  */
 
 import { v } from "convex/values";
+import { parseOperation } from "../lib/schemas/canvas-operations";
 import { mutation, query } from "./_generated/server";
+
+/**
+ * Validate an operation JSON string.
+ * Throws if the operation is invalid.
+ */
+function validateOperation(operationJson: string): void {
+	const parsed = JSON.parse(operationJson);
+	parseOperation(parsed); // Throws ZodError if invalid
+}
 
 // Apply a single operation to a design
 export const applyOperation = mutation({
@@ -43,6 +53,10 @@ export const applyOperation = mutation({
 		if (!project || project.userId !== identity.subject) {
 			throw new Error("Design not found");
 		}
+
+		// Validate the operation before storing
+		// This ensures only well-formed operations are persisted
+		validateOperation(args.operation);
 
 		// Check for duplicate operation (idempotency)
 		// This is critical for CRDT correctness - operations must be safely re-applicable
@@ -125,6 +139,9 @@ export const applyOperations = mutation({
 		let lastCreationTime = 0;
 
 		for (const op of args.operations) {
+			// Validate each operation before storing
+			validateOperation(op.operation);
+
 			// Check for duplicate (idempotency)
 			const existing = await ctx.db
 				.query("designOperations")

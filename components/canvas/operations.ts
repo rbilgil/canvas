@@ -8,110 +8,11 @@
  * - Received from server for collaboration
  */
 
-import { z } from "zod";
+import {
+	canvasOperationSchema,
+	safeParseOperation,
+} from "@/lib/schemas/canvas-operations";
 import type { CanvasShape } from "./types";
-
-// ============================================================================
-// Zod Schemas for Shape Validation
-// ============================================================================
-
-const baseShapeSchema = z.object({
-	id: z.string(),
-	x: z.number(),
-	y: z.number(),
-	rotationDeg: z.number().optional(),
-	stroke: z.string().optional(),
-	strokeWidth: z.number().optional(),
-	fill: z.string().optional(),
-	opacity: z.number().optional(),
-});
-
-const rectShapeSchema = baseShapeSchema.extend({
-	type: z.literal("rect"),
-	width: z.number(),
-	height: z.number(),
-	radius: z.number().optional(),
-});
-
-const ellipseShapeSchema = baseShapeSchema.extend({
-	type: z.literal("ellipse"),
-	width: z.number(),
-	height: z.number(),
-});
-
-const lineShapeSchema = baseShapeSchema.extend({
-	type: z.literal("line"),
-	x2: z.number(),
-	y2: z.number(),
-});
-
-const textShapeSchema = baseShapeSchema.extend({
-	type: z.literal("text"),
-	text: z.string(),
-	fontSize: z.number(),
-	fontFamily: z.string().optional(),
-	fontWeight: z.string().optional(),
-});
-
-const svgShapeSchema = baseShapeSchema.extend({
-	type: z.literal("svg"),
-	width: z.number(),
-	height: z.number(),
-	svg: z.string(),
-});
-
-const imageShapeSchema = baseShapeSchema.extend({
-	type: z.literal("image"),
-	width: z.number(),
-	height: z.number(),
-	href: z.string(),
-});
-
-const canvasShapeSchema = z.discriminatedUnion("type", [
-	rectShapeSchema,
-	ellipseShapeSchema,
-	lineShapeSchema,
-	textShapeSchema,
-	svgShapeSchema,
-	imageShapeSchema,
-]);
-
-// Partial shape schema for updates (all fields optional except type discriminator)
-const partialShapeSchema = z.record(z.string(), z.unknown());
-
-// ============================================================================
-// Zod Schemas for Operations
-// ============================================================================
-
-const baseOperationSchema = z.object({
-	id: z.string(),
-	timestamp: z.number(),
-	clientId: z.string(),
-});
-
-const addShapeOperationSchema = baseOperationSchema.extend({
-	type: z.literal("addShape"),
-	shape: canvasShapeSchema,
-});
-
-const updateShapeOperationSchema = baseOperationSchema.extend({
-	type: z.literal("updateShape"),
-	shapeId: z.string(),
-	updates: partialShapeSchema,
-	previousValues: partialShapeSchema,
-});
-
-const deleteShapeOperationSchema = baseOperationSchema.extend({
-	type: z.literal("deleteShape"),
-	shapeId: z.string(),
-	deletedShape: canvasShapeSchema,
-});
-
-const canvasOperationSchema = z.discriminatedUnion("type", [
-	addShapeOperationSchema,
-	updateShapeOperationSchema,
-	deleteShapeOperationSchema,
-]);
 
 // Unique identifier for each operation
 export type OperationId = string;
@@ -313,14 +214,9 @@ export function safeDeserializeOperation(
 ): CanvasOperation | null {
 	try {
 		const parsed = JSON.parse(data);
-		const result = canvasOperationSchema.safeParse(parsed);
-		if (result.success) {
-			return result.data as CanvasOperation;
-		}
-		console.warn("Invalid operation data:", result.error.format());
-		return null;
+		return safeParseOperation(parsed) as CanvasOperation | null;
 	} catch (error) {
-		console.warn("Failed to parse operation:", error);
+		console.warn("Failed to parse operation JSON:", error);
 		return null;
 	}
 }
