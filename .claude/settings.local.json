@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx convex dev:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}
