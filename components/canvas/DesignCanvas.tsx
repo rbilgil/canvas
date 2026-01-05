@@ -18,9 +18,9 @@ import {
 	createAddShapeOp,
 	createDeleteShapeOp,
 	createUpdateShapeOp,
-	deserializeOperation,
 	getShapeChanges,
 	invertOperation,
+	safeDeserializeOperation,
 	serializeOperation,
 } from "@/components/canvas/operations";
 import { PropertiesPanel } from "@/components/canvas/PropertiesPanel";
@@ -49,11 +49,39 @@ import { Input } from "@/components/ui/input";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
-// Type for the designOperations API (will be generated after running convex dev)
+// Type definitions for the designOperations API
+// These match the actual mutations/queries in convex/designOperations.ts
+interface ApplyOperationsResult {
+	success: boolean;
+	lastCreationTime: number;
+	appliedCount: number;
+}
+
+interface RemoteOperation {
+	operationId: string;
+	operation: string;
+	clientId: string;
+	clientTimestamp: number;
+	creationTime: number;
+}
+
+// Access the designOperations API (types are manually defined until regenerated)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const designOpsApi = (api as any).designOperations as {
-	applyOperations: typeof api.designs.updateDesignConfig;
-	getOperationsSince: typeof api.designs.getDesignsByProject;
+	applyOperations: (args: {
+		designId: Id<"designs">;
+		clientId: string;
+		operations: Array<{
+			operationId: string;
+			operation: string;
+			timestamp: number;
+		}>;
+	}) => Promise<ApplyOperationsResult>;
+	getOperationsSince: (args: {
+		designId: Id<"designs">;
+		sinceCreationTime: number;
+		excludeClientId?: string;
+	}) => RemoteOperation[];
 };
 
 export interface DesignData {
@@ -132,6 +160,7 @@ interface SingleDesignCanvasProps {
 	onToolChange: (tool: Tool) => void;
 	clientId: string;
 	onCanUndoChange?: (canUndo: boolean) => void;
+	registerUndo?: (undoFn: () => boolean) => void;
 }
 
 function SingleDesignCanvas({
@@ -142,6 +171,7 @@ function SingleDesignCanvas({
 	onToolChange,
 	clientId,
 	onCanUndoChange,
+	registerUndo,
 }: SingleDesignCanvasProps) {
 	// Local shapes state for immediate UI feedback
 	const [shapes, setShapes] = useState<CanvasShape[]>(design.initialShapes);
@@ -175,7 +205,8 @@ function SingleDesignCanvas({
 	const pendingOpsRef = useRef<CanvasOperation[]>([]);
 	const flushTimeoutRef = useRef<number | null>(null);
 	// Track last seen _creationTime for sync (following Convex+Automerge pattern)
-	const lastCreationTimeRef = useRef<number>(0);
+	// Using state (not ref) so useQuery re-runs when this changes
+	const [lastCreationTime, setLastCreationTime] = useState<number>(0);
 
 	// Convex mutations - using type assertion until types are regenerated
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -191,7 +222,7 @@ function SingleDesignCanvas({
 		design.id
 			? {
 					designId: design.id as Id<"designs">,
-					sinceCreationTime: lastCreationTimeRef.current,
+					sinceCreationTime: lastCreationTime,
 					excludeClientId: clientId,
 				}
 			: "skip",
@@ -241,12 +272,16 @@ function SingleDesignCanvas({
 		height: number;
 	}>(null);
 
+	// Track applied operation IDs to prevent duplicate application
+	const appliedOpIdsRef = useRef<Set<string>>(new Set());
+
 	// Initialize shapes when design changes
 	useEffect(() => {
 		if (initializedForDesignRef.current !== design.id) {
 			setShapes(design.initialShapes);
 			setUndoStack([]);
-			lastCreationTimeRef.current = 0;
+			setLastCreationTime(0);
+			appliedOpIdsRef.current.clear();
 			initializedForDesignRef.current = design.id;
 		}
 	}, [design.id, design.initialShapes]);
@@ -256,20 +291,41 @@ function SingleDesignCanvas({
 	useEffect(() => {
 		if (!remoteOps || remoteOps.length === 0) return;
 
-		const newOps = remoteOps.map(
-			(op: { operation: string; creationTime: number }) =>
-				deserializeOperation(op.operation),
-		);
-		setShapes((prev) => applyOperations(prev, newOps));
+		// Filter out operations we've already applied (deduplication)
+		// and validate incoming operations
+		const newOps: CanvasOperation[] = [];
+		let maxCreationTime = lastCreationTime;
+
+		for (const op of remoteOps as Array<{
+			operationId: string;
+			operation: string;
+			creationTime: number;
+		}>) {
+			if (!appliedOpIdsRef.current.has(op.operationId)) {
+				// Use safe deserialization to gracefully handle corrupted data
+				const deserializedOp = safeDeserializeOperation(op.operation);
+				if (deserializedOp) {
+					newOps.push(deserializedOp);
+					appliedOpIdsRef.current.add(op.operationId);
+				}
+				// If null, the operation was invalid - skip it but still track the ID
+				// to avoid re-processing
+				else {
+					appliedOpIdsRef.current.add(op.operationId);
+				}
+			}
+			maxCreationTime = Math.max(maxCreationTime, op.creationTime);
+		}
+
+		if (newOps.length > 0) {
+			setShapes((prev) => applyOperations(prev, newOps));
+		}
 
 		// Update the last seen _creationTime
-		const maxCreationTime = Math.max(
-			...remoteOps.map((op: { creationTime: number }) => op.creationTime),
-		);
-		if (maxCreationTime > lastCreationTimeRef.current) {
-			lastCreationTimeRef.current = maxCreationTime;
+		if (maxCreationTime > lastCreationTime) {
+			setLastCreationTime(maxCreationTime);
 		}
-	}, [remoteOps]);
+	}, [remoteOps, lastCreationTime]);
 
 	// Notify parent of undo stack changes
 	useEffect(() => {
@@ -284,6 +340,11 @@ function SingleDesignCanvas({
 		const opsToSend = pendingOpsRef.current;
 		pendingOpsRef.current = [];
 
+		// Mark these operation IDs as applied so we don't re-apply from subscription
+		for (const op of opsToSend) {
+			appliedOpIdsRef.current.add(op.id);
+		}
+
 		try {
 			const result = await applyOpsMutation({
 				designId: design.id as Id<"designs">,
@@ -297,9 +358,9 @@ function SingleDesignCanvas({
 
 			// Update our _creationTime cursor to avoid reprocessing our own ops
 			// The server returns the lastCreationTime from the inserted documents
-			if (result.lastCreationTime > lastCreationTimeRef.current) {
-				lastCreationTimeRef.current = result.lastCreationTime;
-			}
+			setLastCreationTime((prev) =>
+				Math.max(prev, result.lastCreationTime ?? 0),
+			);
 		} catch (error) {
 			console.error("Failed to apply operations:", error);
 			// Re-queue the operations for retry (idempotency ensures safety)
@@ -909,12 +970,13 @@ function SingleDesignCanvas({
 		setActiveHandle(null);
 
 		// Commit group drag as operations
+		// Note: Shapes are already in final position from handlePointerMove
+		// We only need to create operations for persistence and undo
 		if (groupDragRef.current) {
 			const originals = groupDragRef.current.originals;
 			for (const [id, originalShape] of Object.entries(originals)) {
 				const currentShape = shapes.find((s) => s.id === id);
 				if (currentShape && originalShape) {
-					// Create update operation for the move
 					const { updates, previousValues } = getShapeChanges(
 						originalShape,
 						currentShape,
@@ -926,11 +988,8 @@ function SingleDesignCanvas({
 							updates,
 							previousValues,
 						);
-						applyOperation(op, true);
-						// Remove the shape from local state since applyOperation will add it back
-						// Actually, since we already moved it locally, just queue the op
-						// We need to NOT re-apply locally since it's already done
-						// Let's adjust: just queue without local apply
+						// Don't apply locally - shapes are already positioned
+						// Just add to undo stack and queue for server
 						setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
 						pendingOpsRef.current.push(op);
 					}
@@ -1164,27 +1223,24 @@ function SingleDesignCanvas({
 	const displayWidth = design.width * scale;
 	const displayHeight = design.height * scale;
 
-	// Cleanup on unmount
+	// Cleanup on unmount - flush any pending operations
 	useEffect(() => {
 		return () => {
 			if (flushTimeoutRef.current) {
 				clearTimeout(flushTimeoutRef.current);
 			}
+			// Synchronously flush pending operations before unmount
+			// This ensures no operations are lost when navigating away
+			if (pendingOpsRef.current.length > 0) {
+				void flushPendingOps();
+			}
 		};
-	}, []);
+	}, [flushPendingOps]);
 
-	// Expose undo method for parent
+	// Register undo method with parent
 	useEffect(() => {
-		// Store undo method on a ref that parent can access
-		(window as unknown as Record<string, unknown>)[
-			`__canvas_undo_${design.id}`
-		] = undo;
-		return () => {
-			delete (window as unknown as Record<string, unknown>)[
-				`__canvas_undo_${design.id}`
-			];
-		};
-	}, [design.id, undo]);
+		registerUndo?.(undo);
+	}, [undo, registerUndo]);
 
 	return (
 		<div className="flex-shrink-0">
@@ -1489,6 +1545,9 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 		// Store shapes per design for retrieval
 		const shapesMapRef = useRef<Map<string, CanvasShape[]>>(new Map());
 
+		// Store undo functions per design
+		const undoFunctionsRef = useRef<Map<string, () => boolean>>(new Map());
+
 		// Track which design can undo
 		const [canUndoMap, setCanUndoMap] = useState<Map<string, boolean>>(
 			new Map(),
@@ -1501,10 +1560,7 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			},
 			undo: () => {
 				if (!activeDesignId) return;
-				// Call the undo function stored on window
-				const undoFn = (window as unknown as Record<string, unknown>)[
-					`__canvas_undo_${activeDesignId}`
-				] as (() => boolean) | undefined;
+				const undoFn = undoFunctionsRef.current.get(activeDesignId);
 				if (undoFn) undoFn();
 			},
 			resetView: () => {
@@ -1543,6 +1599,9 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 							onCanUndoChange={(canUndo) =>
 								handleCanUndoChange(design.id, canUndo)
 							}
+							registerUndo={(undoFn) => {
+								undoFunctionsRef.current.set(design.id, undoFn);
+							}}
 						/>
 					))}
 				</div>
