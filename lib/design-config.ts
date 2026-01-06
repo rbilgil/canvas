@@ -1,7 +1,11 @@
 import { z } from "zod";
 
-// Shape schemas matching the canvas types
-const BaseShapeSchema = z.object({
+// =============================================================================
+// Shape Schemas - Single source of truth for shape definitions
+// Types are derived from these schemas using z.infer<>
+// =============================================================================
+
+export const BaseShapeSchema = z.object({
 	id: z.string(),
 	x: z.number(),
 	y: z.number(),
@@ -12,26 +16,26 @@ const BaseShapeSchema = z.object({
 	opacity: z.number().optional(),
 });
 
-const RectShapeSchema = BaseShapeSchema.extend({
+export const RectShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("rect"),
 	width: z.number(),
 	height: z.number(),
 	radius: z.number().optional(),
 });
 
-const EllipseShapeSchema = BaseShapeSchema.extend({
+export const EllipseShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("ellipse"),
 	width: z.number(),
 	height: z.number(),
 });
 
-const LineShapeSchema = BaseShapeSchema.extend({
+export const LineShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("line"),
 	x2: z.number(),
 	y2: z.number(),
 });
 
-const TextShapeSchema = BaseShapeSchema.extend({
+export const TextShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("text"),
 	text: z.string(),
 	fontSize: z.number(),
@@ -39,18 +43,29 @@ const TextShapeSchema = BaseShapeSchema.extend({
 	fontWeight: z.string().optional(),
 });
 
-const SvgShapeSchema = BaseShapeSchema.extend({
+export const SvgShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("svg"),
 	width: z.number(),
 	height: z.number(),
 	svg: z.string(),
 });
 
-const ImageShapeSchema = BaseShapeSchema.extend({
+export const ImageShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("image"),
 	width: z.number(),
 	height: z.number(),
 	href: z.string(),
+});
+
+export const PathPointSchema = z.object({
+	x: z.number(),
+	y: z.number(),
+	moveTo: z.boolean().optional(),
+});
+
+export const PathShapeSchema = BaseShapeSchema.extend({
+	type: z.literal("path"),
+	points: z.array(PathPointSchema),
 });
 
 export const CanvasShapeSchema = z.discriminatedUnion("type", [
@@ -60,6 +75,7 @@ export const CanvasShapeSchema = z.discriminatedUnion("type", [
 	TextShapeSchema,
 	SvgShapeSchema,
 	ImageShapeSchema,
+	PathShapeSchema,
 ]);
 
 export const DesignConfigSchema = z.object({
@@ -67,7 +83,6 @@ export const DesignConfigSchema = z.object({
 });
 
 export type DesignConfig = z.infer<typeof DesignConfigSchema>;
-export type CanvasShapeFromSchema = z.infer<typeof CanvasShapeSchema>;
 
 // Parse and validate a design config, returning a default if invalid
 export function parseDesignConfig(config: unknown): DesignConfig {

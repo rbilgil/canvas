@@ -1743,10 +1743,36 @@ function SingleDesignCanvas({
 											lassoPoints: lassoPending?.points,
 										});
 
+										// Build selected shapes info for multi-element operations
+										const effectiveSelectedIds =
+											!lassoPending && selectedIds.length > 0
+												? selectedIds
+												: !lassoPending && selectedId
+													? [selectedId]
+													: [];
+										const selectedShapesInfo = effectiveSelectedIds
+											.map((id) => shapes.find((s) => s.id === id))
+											.filter((s): s is NonNullable<typeof s> => s != null)
+											.map((s) => ({
+												id: s.id,
+												type: s.type,
+												x: s.x,
+												y: s.y,
+												width: "width" in s ? s.width : undefined,
+												height: "height" in s ? s.height : undefined,
+												fill: s.fill,
+												stroke: s.stroke,
+												text: s.type === "text" ? s.text : undefined,
+											}));
+
 										const res = await interpret({
 											input: rcText.trim(),
 											imageContext: context.dataUrl,
 											contextDescription: context.description,
+											selectedShapes:
+												selectedShapesInfo.length > 0
+													? selectedShapesInfo
+													: undefined,
 										});
 										applyCommandGroup(
 											res.commands,
@@ -1810,10 +1836,36 @@ function SingleDesignCanvas({
 											lassoPoints: lassoPending?.points,
 										});
 
+										// Build selected shapes info for multi-element operations
+										const effectiveSelectedIds =
+											!lassoPending && selectedIds.length > 0
+												? selectedIds
+												: !lassoPending && selectedId
+													? [selectedId]
+													: [];
+										const selectedShapesInfo = effectiveSelectedIds
+											.map((id) => shapes.find((s) => s.id === id))
+											.filter((s): s is NonNullable<typeof s> => s != null)
+											.map((s) => ({
+												id: s.id,
+												type: s.type,
+												x: s.x,
+												y: s.y,
+												width: "width" in s ? s.width : undefined,
+												height: "height" in s ? s.height : undefined,
+												fill: s.fill,
+												stroke: s.stroke,
+												text: s.type === "text" ? s.text : undefined,
+											}));
+
 										const res = await interpret({
 											input: rcText.trim(),
 											imageContext: context.dataUrl,
 											contextDescription: context.description,
+											selectedShapes:
+												selectedShapesInfo.length > 0
+													? selectedShapesInfo
+													: undefined,
 										});
 										applyCommandGroup(
 											res.commands,

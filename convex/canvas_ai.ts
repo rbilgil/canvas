@@ -1,7 +1,7 @@
 "use node";
 
 import { type GoogleGenerativeAIProviderOptions, google } from "@ai-sdk/google";
-import { generateObject } from "ai";
+import { generateText, stepCountIs, tool } from "ai";
 import { v } from "convex/values";
 import { z } from "zod";
 import { action } from "./_generated/server";
@@ -14,28 +14,7 @@ function selectModel() {
 	return google(modelName);
 }
 
-// Zod schema for tool commands
-const MoveCommand = z
-	.object({
-		tool: z.literal("moveObject"),
-		id: z.string().optional(),
-		target: z.string().optional(),
-		dx: z.number(),
-		dy: z.number(),
-	})
-	.strict();
-
-const ResizeCommand = z
-	.object({
-		tool: z.literal("resize"),
-		id: z.string().optional(),
-		target: z.string().optional(),
-		width: z.number().optional(),
-		height: z.number().optional(),
-		scale: z.number().optional(),
-	})
-	.strict();
-
+// Hex color validation
 const hexColor = z
 	.string()
 	.regex(
@@ -43,65 +22,176 @@ const hexColor = z
 		"HEX color like #RRGGBB or #RGB",
 	);
 
-const ChangeColorCommand = z
-	.object({
-		tool: z.literal("changeColor"),
-		id: z.string().optional(),
-		target: z.string().optional(),
-		fill: hexColor.optional(),
-		stroke: hexColor.optional(),
-	})
-	.strict();
+// Tool parameter schemas (without the "tool" discriminator field)
+const MoveParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe(
+			"The shape ID to move. Required when multiple shapes are selected.",
+		),
+	dx: z
+		.number()
+		.describe(
+			"Pixels to move horizontally. Positive = right, negative = left.",
+		),
+	dy: z
+		.number()
+		.describe("Pixels to move vertically. Positive = down, negative = up."),
+});
 
-const GenerateSvgCommand = z
-	.object({
-		tool: z.literal("generateSvg"),
-		id: z.string().optional(),
-		svg: z.string(),
-		x: z.number().optional(),
-		y: z.number().optional(),
-		width: z.number().optional(),
-		height: z.number().optional(),
-	})
-	.strict();
+const ResizeParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe(
+			"The shape ID to resize. Required when multiple shapes are selected.",
+		),
+	width: z.number().optional().describe("New width in pixels."),
+	height: z.number().optional().describe("New height in pixels."),
+	scale: z
+		.number()
+		.optional()
+		.describe(
+			"Scale factor. Use this for 'bigger/smaller' requests (e.g., 1.5 = 50% bigger, 0.5 = half size).",
+		),
+});
 
-const GenerateImageCommand = z
-	.object({
-		tool: z.literal("generateImage"),
-		id: z.string().optional(),
-		prompt: z.string(),
-		x: z.number().optional(),
-		y: z.number().optional(),
-		width: z.number().optional(),
-		height: z.number().optional(),
-	})
-	.strict();
+const ChangeColorParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe(
+			"The shape ID to recolor. Required when multiple shapes are selected.",
+		),
+	fill: hexColor
+		.optional()
+		.describe("New fill color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor
+		.optional()
+		.describe("New stroke/border color as HEX (#RRGGBB or #RGB)."),
+});
 
-const EditImageCommand = z
-	.object({
-		tool: z.literal("editImage"),
-		id: z.string().optional(),
-		prompt: z.string(),
-	})
-	.strict();
+const GenerateSvgParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe("Optional shape ID to replace with the SVG."),
+	svg: z.string().describe("Complete SVG markup string (<svg>...</svg>)."),
+	x: z.number().optional().describe("X position on canvas."),
+	y: z.number().optional().describe("Y position on canvas."),
+	width: z.number().optional().describe("Width of the SVG."),
+	height: z.number().optional().describe("Height of the SVG."),
+});
 
-const CombineSelectionCommand = z
-	.object({
-		tool: z.literal("combineSelection"),
-	})
-	.strict();
+const GenerateImageParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe("Optional shape ID to replace with the image."),
+	prompt: z.string().describe("Description of the image to generate."),
+	x: z.number().optional().describe("X position on canvas."),
+	y: z.number().optional().describe("Y position on canvas."),
+	width: z.number().optional().describe("Width of the image."),
+	height: z.number().optional().describe("Height of the image."),
+});
 
-const CommandSchema = z.discriminatedUnion("tool", [
-	MoveCommand,
-	ResizeCommand,
-	ChangeColorCommand,
-	GenerateSvgCommand,
-	GenerateImageCommand,
-	EditImageCommand,
-	CombineSelectionCommand,
-]);
+const EditImageParams = z.object({
+	id: z.string().optional().describe("The image shape ID to edit."),
+	prompt: z.string().describe("Description of how to edit the image."),
+});
 
-export type CanvasCommand = z.infer<typeof CommandSchema>;
+const CombineSelectionParams = z.object({});
+
+// Define the tools
+const canvasTools = {
+	moveObject: tool({
+		description:
+			"Move one or more shapes by a relative offset. Call multiple times to move multiple shapes.",
+
+		inputSchema: MoveParams,
+	}),
+	resize: tool({
+		description:
+			"Resize a shape. Use 'scale' for relative sizing (bigger/smaller) or width/height for absolute dimensions.",
+		inputSchema: ResizeParams,
+	}),
+	changeColor: tool({
+		description:
+			"Change the fill and/or stroke color of a shape. Colors must be HEX codes.",
+		inputSchema: ChangeColorParams,
+	}),
+	generateSvg: tool({
+		description: "Generate and insert SVG vector art onto the canvas.",
+		inputSchema: GenerateSvgParams,
+	}),
+	generateImage: tool({
+		description:
+			"Generate a raster image from a text prompt and place it on the canvas.",
+		inputSchema: GenerateImageParams,
+	}),
+	editImage: tool({
+		description: "Edit an existing image on the canvas using a text prompt.",
+		inputSchema: EditImageParams,
+	}),
+	combineSelection: tool({
+		description:
+			"Merge all currently selected shapes into a single raster image.",
+		inputSchema: CombineSelectionParams,
+	}),
+};
+
+// Command types for the return value
+export type CanvasCommand =
+	| { tool: "moveObject"; id?: string; target?: string; dx: number; dy: number }
+	| {
+			tool: "resize";
+			id?: string;
+			target?: string;
+			width?: number;
+			height?: number;
+			scale?: number;
+	  }
+	| {
+			tool: "changeColor";
+			id?: string;
+			target?: string;
+			fill?: string;
+			stroke?: string;
+	  }
+	| {
+			tool: "generateSvg";
+			id?: string;
+			svg: string;
+			x?: number;
+			y?: number;
+			width?: number;
+			height?: number;
+	  }
+	| {
+			tool: "generateImage";
+			id?: string;
+			prompt: string;
+			x?: number;
+			y?: number;
+			width?: number;
+			height?: number;
+	  }
+	| { tool: "editImage"; id?: string; prompt: string }
+	| { tool: "combineSelection" };
+
+// Schema for selected shape info passed to the AI
+const SelectedShapeInfo = v.object({
+	id: v.string(),
+	type: v.string(),
+	x: v.number(),
+	y: v.number(),
+	width: v.optional(v.number()),
+	height: v.optional(v.number()),
+	fill: v.optional(v.string()),
+	stroke: v.optional(v.string()),
+	text: v.optional(v.string()),
+});
 
 export const interpret = action({
 	args: {
@@ -110,6 +200,8 @@ export const interpret = action({
 		imageContext: v.optional(v.string()),
 		// Description of what the image shows (e.g., "selected rect shape", "full canvas")
 		contextDescription: v.optional(v.string()),
+		// Structured info about selected shapes so AI can reference them by ID
+		selectedShapes: v.optional(v.array(SelectedShapeInfo)),
 	},
 	returns: v.object({
 		commands: v.array(
@@ -171,20 +263,29 @@ export const interpret = action({
 
 		const systemParts = [
 			"You are a UI copilot for a vector canvas app.",
-			'Return ONLY JSON of the form {"commands": [...]}. No prose, no code fences.',
-			"If the user's intent is ambiguous, make a sensible default.",
-			"If a specific shape id is not provided, omit 'id' and 'target'. The client will apply to the selected shape.",
-			"For resize: prefer scale if user says 'bigger/smaller'; otherwise set width/height explicitly if mentioned.",
-			"For move: dx/dy are pixels; positive dx moves right, positive dy moves down.",
-			"For changeColor: support either fill, stroke, or both. Colors MUST be HEX codes only (#RRGGBB or #RGB). Never return names or rgba/hsl. If unsure, omit the property.",
-			"You can also generate SVG art: use the generateSvg tool with fields {id, svg, x?, y?, height?}. Return a valid, self-contained <svg>...</svg> string in svg.",
-			'To merge currently selected shapes into one raster image, return a single command: {"tool": "combineSelection"}.',
+			"Use the provided tools to execute the user's request. You can call multiple tools in one response.",
+			"If the user's intent is ambiguous, make a sensible default choice.",
 		];
 
 		// Add context description if provided
 		if (args.contextDescription) {
 			systemParts.push(
 				`\nYou are looking at: ${args.contextDescription}. Use this visual context to understand what the user is referring to.`,
+			);
+		}
+
+		// Add selected shapes info for multi-element operations
+		if (args.selectedShapes && args.selectedShapes.length > 0) {
+			systemParts.push(
+				"\n## Selected Shapes",
+				"The user has selected the following shapes. Use the 'id' parameter to target specific shapes:",
+				JSON.stringify(args.selectedShapes, null, 2),
+				"\nWhen the user asks to modify multiple elements (e.g., 'bring these closer', 'make them all red', 'align these'), call the appropriate tool once for each shape.",
+				"For spatial operations like 'bring closer together', calculate appropriate dx/dy values based on shape positions to move them toward their center.",
+			);
+		} else {
+			systemParts.push(
+				"If there's a single selected shape, you can omit the 'id' parameter and the client will apply it to the selection.",
 			);
 		}
 
@@ -206,28 +307,39 @@ export const interpret = action({
 		// Add user text
 		userContent.push({ type: "text", text: args.input });
 
-		// Generate structured output
-		const { object } = await generateObject({
+		// Generate with tools
+		const result = await generateText({
 			model: "google/gemini-3-flash",
 			system,
 			messages: [{ role: "user", content: userContent }],
-			schema: z.object({ commands: z.array(CommandSchema) }).strict(),
-			temperature: 0.1,
-			maxRetries: 3,
+			tools: canvasTools,
+			stopWhen: stepCountIs(1),
 			providerOptions: {
 				google: {
 					thinkingConfig: {
 						includeThoughts: false,
-						thinkingLevel: "minimal",
+						thinkingLevel: "low",
 					},
 				} satisfies GoogleGenerativeAIProviderOptions,
 			},
 		});
 
-		console.log("canvas_ai.final", object);
-		const commands: Array<CanvasCommand> = Array.isArray(object?.commands)
-			? (object.commands as Array<CanvasCommand>)
-			: [];
+		// Extract tool calls as commands
+		const commands: CanvasCommand[] = [];
+		for (const step of result.steps) {
+			for (const toolCall of step.toolCalls) {
+				const toolName = toolCall.toolName as keyof typeof canvasTools;
+				const toolArgs = toolCall.input as Record<string, unknown>;
+
+				// Convert tool call to command format
+				commands.push({
+					tool: toolName,
+					...toolArgs,
+				} as CanvasCommand);
+			}
+		}
+
+		console.log("canvas_ai.final", { commands });
 		return { commands };
 	},
 });

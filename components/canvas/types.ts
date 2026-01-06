@@ -1,78 +1,39 @@
-export type ShapeType = "rect" | "ellipse" | "line" | "text" | "svg" | "image" | "path";
+import { z } from "zod";
+import {
+	BaseShapeSchema,
+	RectShapeSchema,
+	EllipseShapeSchema,
+	LineShapeSchema,
+	TextShapeSchema,
+	SvgShapeSchema,
+	ImageShapeSchema,
+	PathShapeSchema,
+	PathPointSchema,
+	CanvasShapeSchema,
+} from "@/lib/design-config";
 
-export type BaseShape = {
-	id: string;
-	type: ShapeType;
-	x: number;
-	y: number;
-	rotationDeg?: number;
-	stroke?: string;
-	strokeWidth?: number;
-	fill?: string;
-	opacity?: number;
-};
+// =============================================================================
+// Shape Types - Derived from Zod schemas in lib/design-config.ts
+// This ensures frontend and backend schemas are always in sync
+// =============================================================================
 
-export type RectShape = BaseShape & {
-	type: "rect";
-	width: number;
-	height: number;
-	radius?: number;
-};
+export type ShapeType = CanvasShape["type"];
 
-export type EllipseShape = BaseShape & {
-	type: "ellipse";
-	width: number;
-	height: number;
-};
+export type BaseShape = z.infer<typeof BaseShapeSchema> & { type: ShapeType };
+export type RectShape = z.infer<typeof RectShapeSchema>;
+export type EllipseShape = z.infer<typeof EllipseShapeSchema>;
+export type LineShape = z.infer<typeof LineShapeSchema>;
+export type TextShape = z.infer<typeof TextShapeSchema>;
+export type SvgShape = z.infer<typeof SvgShapeSchema>;
+export type ImageShape = z.infer<typeof ImageShapeSchema>;
+export type PathPoint = z.infer<typeof PathPointSchema>;
+export type PathShape = z.infer<typeof PathShapeSchema>;
 
-export type LineShape = BaseShape & {
-	type: "line";
-	x2: number;
-	y2: number;
-};
+export type CanvasShape = z.infer<typeof CanvasShapeSchema>;
 
-export type TextShape = BaseShape & {
-	type: "text";
-	text: string;
-	fontSize: number;
-	fontFamily?: string;
-	fontWeight?: string;
-};
-
-export type SvgShape = BaseShape & {
-	type: "svg";
-	width: number;
-	height: number;
-	svg: string;
-};
-
-export type ImageShape = BaseShape & {
-	type: "image";
-	width: number;
-	height: number;
-	href: string;
-};
-
-export type PathPoint = {
-	x: number;
-	y: number;
-	/** If true, this starts a new sub-path (move to) instead of continuing (line to) */
-	moveTo?: boolean;
-};
-
-export type PathShape = BaseShape & {
-	type: "path";
-	points: Array<PathPoint>;
-};
-
-export type CanvasShape =
-	| RectShape
-	| EllipseShape
-	| LineShape
-	| TextShape
-	| SvgShape
-	| ImageShape
-	| PathShape;
+// =============================================================================
+// Command Types
+// =============================================================================
 
 export type CanvasToolCommand = {
 	tool:
@@ -104,6 +65,10 @@ export type LocalUndoCommand =
 	| { tool: "deleteObject"; id: string };
 
 export type AnyCommand = CanvasToolCommand | LocalUndoCommand;
+
+// =============================================================================
+// UI Types
+// =============================================================================
 
 export type Tool =
 	| "select"
