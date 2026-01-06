@@ -251,6 +251,7 @@ function SingleDesignCanvas({
 	const interpret = useAction(api.canvas_ai.interpret);
 	const generateCanvasImage = useAction(api.images.generateCanvasImage);
 	const editCanvasImage = useAction(api.images.editCanvasImage);
+	const uploadImage = useAction(api.images.uploadImage);
 
 	// Lasso tool state
 	const [isLassoing, setIsLassoing] = useState(false);
@@ -1579,6 +1580,8 @@ function SingleDesignCanvas({
 										width: imgW,
 										height: imgH,
 									} = await readImageFile(file);
+									// Upload to Convex storage
+									const { storageUrl } = await uploadImage({ dataUrl });
 									const id = createShapeId("img");
 									const newShape: ImageShape = {
 										id,
@@ -1587,13 +1590,13 @@ function SingleDesignCanvas({
 										y,
 										width: Math.min(imgW, 512),
 										height: Math.min(imgH, 512),
-										href: dataUrl,
+										href: storageUrl, // Use storage URL instead of base64
 									};
 									addShapeOp(newShape);
 									setSelectedId(id);
 									setSelectedIds([id]);
-								} catch {
-									// ignore
+								} catch (err) {
+									console.error("Failed to upload dropped image:", err);
 								}
 							})();
 						}

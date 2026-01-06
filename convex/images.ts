@@ -295,3 +295,23 @@ export const fuseCanvasImages = action({
 		return { dataUrl, mimeType: imageFile.mediaType };
 	},
 });
+
+// Upload an image (from data URL) to Convex storage
+export const uploadImage = action({
+	args: {
+		dataUrl: v.string(),
+	},
+	returns: v.object({
+		storageUrl: v.string(),
+		storageId: v.id("_storage"),
+		mimeType: v.string(),
+	}),
+	handler: async (ctx, args) => {
+		const { mime, bytes } = parseDataUrl(args.dataUrl);
+		const blob = new Blob([Buffer.from(bytes)], { type: mime });
+		const storageId = await ctx.storage.store(blob);
+		const storageUrl = await ctx.storage.getUrl(storageId);
+		if (!storageUrl) throw new Error("Failed to get storage URL");
+		return { storageUrl, storageId, mimeType: mime };
+	},
+});
