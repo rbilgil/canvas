@@ -13,7 +13,7 @@ export async function runLassoEdit(
 		editCanvasImage: (args: {
 			dataUrl: string;
 			prompt: string;
-		}) => Promise<{ dataUrl: string }>;
+		}) => Promise<{ storageUrl: string; mimeType: string }>;
 	},
 ): Promise<void> {
 	const { shapes, setShapes, setUndoStack, editCanvasImage } = deps;
@@ -48,7 +48,8 @@ export async function runLassoEdit(
 		dataUrl: img.href,
 		prompt: `${prompt} (apply only inside lassoed region)`,
 	});
+	// Use storage URL instead of base64
 	setShapes((prev) =>
-		prev.map((s) => (s.id === img.id ? { ...img, href: res.dataUrl } : s)),
+		prev.map((s) => (s.id === img.id ? { ...img, href: res.storageUrl } : s)),
 	);
 }

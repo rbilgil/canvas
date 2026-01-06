@@ -13,17 +13,16 @@ import {
 import { createPortal } from "react-dom";
 import { runLassoEdit as externalRunLassoEdit } from "@/components/canvas/imageLasso";
 import {
-	COLORS,
+	type Corner,
+	centroid,
+	getShapeBounds,
+	moveShape,
+	normalizeRect,
+	rectsIntersect,
+	resizePathShape,
+	resizeRectShape,
 	SHAPE_DEFAULTS,
 	SIZES,
-	getShapeBounds,
-	rectsIntersect,
-	normalizeRect,
-	centroid,
-	moveShape,
-	resizeRectShape,
-	resizePathShape,
-	type Corner,
 } from "@/components/canvas/lib";
 import {
 	applyOperations,
@@ -114,6 +113,8 @@ export interface DesignCanvasProps {
 	tool: Tool;
 	onToolChange: (tool: Tool) => void;
 	onUndoStackChange?: (designId: string, canUndo: boolean) => void;
+	/** Callback when selection changes */
+	onSelectionChange?: (hasSelection: boolean) => void;
 }
 
 export interface DesignCanvasRef {
@@ -121,8 +122,11 @@ export interface DesignCanvasRef {
 	undo: () => void;
 	resetView: () => void;
 	canUndo: () => boolean;
+	hasSelection: () => boolean;
+	moveSelectionUp: () => void;
+	moveSelectionDown: () => void;
+	deleteSelection: () => void;
 }
-
 
 // Generate a unique client ID for this session
 function generateClientId(): string {
@@ -139,6 +143,17 @@ interface SingleDesignCanvasProps {
 	clientId: string;
 	onCanUndoChange?: (designId: string, canUndo: boolean) => void;
 	registerUndo?: (designId: string, undoFn: () => boolean) => void;
+	onSelectionChange?: (hasSelection: boolean) => void;
+	/** Register layer operations for this design */
+	registerLayerOps?: (
+		designId: string,
+		ops: {
+			moveUp: () => void;
+			moveDown: () => void;
+			deleteSelection: () => void;
+			hasSelection: () => boolean;
+		},
+	) => void;
 }
 
 function SingleDesignCanvas({
@@ -150,6 +165,8 @@ function SingleDesignCanvas({
 	clientId,
 	onCanUndoChange,
 	registerUndo,
+	onSelectionChange,
+	registerLayerOps,
 }: SingleDesignCanvasProps) {
 	// Local shapes state for immediate UI feedback
 	const [shapes, setShapes] = useState<CanvasShape[]>(design.initialShapes);
@@ -190,6 +207,8 @@ function SingleDesignCanvas({
 	// Convex mutations - using type assertion until types are regenerated
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const applyOpsMutation = useMutation(designOpsApi.applyOperations as any);
+	// For z-order persistence (direct config update)
+	const updateDesignConfig = useMutation(api.designs.updateDesignConfig);
 
 	// Subscribe to remote operations (from other clients)
 	// Using _creationTime for ordering as recommended by:
@@ -229,7 +248,6 @@ function SingleDesignCanvas({
 
 	const interpret = useAction(api.canvas_ai.interpret);
 	const generateCanvasImage = useAction(api.images.generateCanvasImage);
-	const fuseCanvasImages = useAction(api.images.fuseCanvasImages);
 	const editCanvasImage = useAction(api.images.editCanvasImage);
 
 	// Lasso tool state
@@ -418,6 +436,99 @@ function SingleDesignCanvas({
 		[clientId, applyOperation],
 	);
 
+	// Layer operations - move shapes up/down in z-order
+	// Note: shapes array order = z-order (last = on top)
+	const moveSelectionUp = useCallback(() => {
+		const ids =
+			selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+		if (ids.length === 0) return;
+
+		setShapes((prev) => {
+			const newShapes = [...prev];
+			// Process from end to start to avoid index shifting issues
+			for (let i = newShapes.length - 2; i >= 0; i--) {
+				if (
+					ids.includes(newShapes[i].id) &&
+					!ids.includes(newShapes[i + 1].id)
+				) {
+					// Swap with the shape above
+					[newShapes[i], newShapes[i + 1]] = [newShapes[i + 1], newShapes[i]];
+				}
+			}
+			// Persist z-order to backend
+			void updateDesignConfig({
+				designId: design.id as Id<"designs">,
+				config: { shapes: newShapes },
+			});
+			return newShapes;
+		});
+	}, [selectedIds, selectedId, design.id, updateDesignConfig]);
+
+	const moveSelectionDown = useCallback(() => {
+		const ids =
+			selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+		if (ids.length === 0) return;
+
+		setShapes((prev) => {
+			const newShapes = [...prev];
+			// Process from start to end to avoid index shifting issues
+			for (let i = 1; i < newShapes.length; i++) {
+				if (
+					ids.includes(newShapes[i].id) &&
+					!ids.includes(newShapes[i - 1].id)
+				) {
+					// Swap with the shape below
+					[newShapes[i], newShapes[i - 1]] = [newShapes[i - 1], newShapes[i]];
+				}
+			}
+			// Persist z-order to backend
+			void updateDesignConfig({
+				designId: design.id as Id<"designs">,
+				config: { shapes: newShapes },
+			});
+			return newShapes;
+		});
+	}, [selectedIds, selectedId, design.id, updateDesignConfig]);
+
+	const deleteSelectionOp = useCallback(() => {
+		const ids =
+			selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
+		if (ids.length === 0) return;
+
+		for (const id of ids) {
+			const shape = shapes.find((s) => s.id === id);
+			if (shape) deleteShapeOp(shape);
+		}
+		setSelectedId(null);
+		setSelectedIds([]);
+	}, [selectedIds, selectedId, shapes, deleteShapeOp]);
+
+	const hasSelection = useCallback(() => {
+		return selectedIds.length > 0 || selectedId !== null;
+	}, [selectedIds, selectedId]);
+
+	// Notify parent of selection changes
+	useEffect(() => {
+		onSelectionChange?.(selectedIds.length > 0 || selectedId !== null);
+	}, [selectedIds, selectedId, onSelectionChange]);
+
+	// Register layer operations with parent
+	useEffect(() => {
+		registerLayerOps?.(design.id, {
+			moveUp: moveSelectionUp,
+			moveDown: moveSelectionDown,
+			deleteSelection: deleteSelectionOp,
+			hasSelection,
+		});
+	}, [
+		design.id,
+		moveSelectionUp,
+		moveSelectionDown,
+		deleteSelectionOp,
+		hasSelection,
+		registerLayerOps,
+	]);
+
 	// Undo the last operation
 	const undo = useCallback((): boolean => {
 		if (undoStack.length === 0) return false;
@@ -437,7 +548,11 @@ function SingleDesignCanvas({
 
 	// For AI commands that need the old command system
 	const applyCommandGroup = useCallback(
-		(commands: Array<AnyCommand>, _opts?: { recordUndo?: boolean }) => {
+		(
+			commands: Array<AnyCommand>,
+			_opts?: { recordUndo?: boolean },
+			context?: { userPrompt: string; canvasDataUrl: string },
+		) => {
 			const imageCommands = commands.filter(
 				(c) =>
 					c.tool === "generateImage" ||
@@ -556,7 +671,7 @@ function SingleDesignCanvas({
 								y: cmd.y ?? 40,
 								width: res.width,
 								height: res.height,
-								href: res.dataUrl,
+								href: res.storageUrl, // Use storage URL instead of base64
 							};
 							addShapeOp(newShape);
 						} else if (cmd.tool === "editImage") {
@@ -570,155 +685,44 @@ function SingleDesignCanvas({
 								dataUrl: before.href,
 								prompt: cmd.prompt,
 							});
-							updateShapeOp(before.id, before, { href: res.dataUrl });
+							// Use the storage URL instead of base64
+							updateShapeOp(before.id, before, { href: res.storageUrl });
 						} else if (cmd.tool === "combineSelection") {
-							const ids = selectedIds.length
-								? selectedIds.slice()
-								: selectedId
-									? [selectedId]
-									: [];
-							if (ids.length === 0) continue;
-							const originals = shapes.filter((s) => ids.includes(s.id));
-							if (originals.length === 0) continue;
-							const bounds = originals.map((s) => getShapeBounds(s));
-							const minX = Math.min(...bounds.map((b) => b.x));
-							const minY = Math.min(...bounds.map((b) => b.y));
-							const maxX = Math.max(...bounds.map((b) => b.x + b.width));
-							const maxY = Math.max(...bounds.map((b) => b.y + b.height));
-							const bbox = {
-								x: minX,
-								y: minY,
-								width: maxX - minX,
-								height: maxY - minY,
-							};
-							if (!Number.isFinite(bbox.x) || !Number.isFinite(bbox.y))
+							// Generate a new image from the canvas context and add to current canvas
+							if (!context?.canvasDataUrl || !context?.userPrompt) {
+								console.log("combineSelection: missing context or prompt");
 								continue;
-
-							const makeDataUrlForShape = async (
-								s: CanvasShape,
-							): Promise<string> => {
-								if (s.type === "image") return s.href;
-								const localCanvas = document.createElement("canvas");
-								const b = getShapeBounds(s);
-								localCanvas.width = Math.max(1, Math.ceil(b.width));
-								localCanvas.height = Math.max(1, Math.ceil(b.height));
-								const lctx = localCanvas.getContext("2d");
-								if (!lctx) return localCanvas.toDataURL("image/png");
-								lctx.save();
-								const rot = (s as { rotationDeg?: number }).rotationDeg || 0;
-								const opacity = (s as { opacity?: number }).opacity ?? 1;
-								lctx.globalAlpha = opacity;
-								if (rot) {
-									const cx = localCanvas.width / 2;
-									const cy = localCanvas.height / 2;
-									lctx.translate(cx, cy);
-									lctx.rotate((rot * Math.PI) / 180);
-									lctx.translate(-cx, -cy);
-								}
-								if (s.type === "rect") {
-									lctx.beginPath();
-									lctx.rect(0, 0, s.width, s.height);
-									if (s.fill) {
-										lctx.fillStyle = s.fill;
-										lctx.fill();
-									}
-									lctx.lineWidth = s.strokeWidth || 0;
-									if (s.stroke && (s.strokeWidth || 0) > 0) {
-										lctx.strokeStyle = s.stroke;
-										lctx.stroke();
-									}
-								} else if (s.type === "ellipse") {
-									lctx.beginPath();
-									lctx.ellipse(
-										s.width / 2,
-										s.height / 2,
-										s.width / 2,
-										s.height / 2,
-										0,
-										0,
-										Math.PI * 2,
-									);
-									if (s.fill) {
-										lctx.fillStyle = s.fill;
-										lctx.fill();
-									}
-									lctx.lineWidth = s.strokeWidth || 0;
-									if (s.stroke && (s.strokeWidth || 0) > 0) {
-										lctx.strokeStyle = s.stroke;
-										lctx.stroke();
-									}
-								} else if (s.type === "line") {
-									lctx.beginPath();
-									lctx.moveTo(s.x - b.x, s.y - b.y);
-									lctx.lineTo(s.x2 - b.x, s.y2 - b.y);
-									lctx.lineWidth = s.strokeWidth || 2;
-									lctx.strokeStyle = s.stroke || "#0f172a";
-									lctx.stroke();
-								} else if (s.type === "text") {
-									const fontWeight = s.fontWeight || "400";
-									const fontFamily = s.fontFamily || "ui-sans-serif, system-ui";
-									lctx.font = `${fontWeight} ${s.fontSize}px ${fontFamily}`;
-									lctx.textBaseline = "top";
-									if (s.fill) {
-										lctx.fillStyle = s.fill;
-										lctx.fillText(s.text, s.x - b.x, s.y - b.y);
-									}
-									if (s.stroke && (s.strokeWidth || 0) > 0) {
-										lctx.lineWidth = s.strokeWidth || 1;
-										lctx.strokeStyle = s.stroke;
-										lctx.strokeText(s.text, s.x - b.x, s.y - b.y);
-									}
-								} else if (s.type === "svg") {
-									await new Promise<void>((resolve) => {
-										const img = new Image();
-										img.onload = () => {
-											lctx.drawImage(img, 0, 0, s.width, s.height);
-											resolve();
-										};
-										img.onerror = () => resolve();
-										img.src = `data:image/svg+xml;utf8,${encodeURIComponent(s.svg)}`;
-									});
-								}
-								lctx.restore();
-								return localCanvas.toDataURL("image/png");
-							};
-
-							const imagePayloads: Array<{ dataUrl: string; label?: string }> =
-								[];
-							for (const s of originals) {
-								const dataUrl = await makeDataUrlForShape(s);
-								imagePayloads.push({ dataUrl });
 							}
 
-							const instruction = [
-								"Combine the following image layers into a single, beautiful, photoreal image.",
-								"Ignore any text or watermark artifacts. Return a single, re-imagined, photoreal image only.",
-							].join(" \n");
-
 							try {
-								const fused = await fuseCanvasImages({
-									images: imagePayloads,
-									prompt: instruction,
+								// Use the canvas context as input and generate a new image
+								const prompt = [
+									context.userPrompt,
+									"Based on the provided canvas image, create a polished, high-quality result.",
+								].join(" ");
+
+								const result = await editCanvasImage({
+									dataUrl: context.canvasDataUrl,
+									prompt,
 								});
+
+								// Add the generated image as a new shape on top of the current canvas
 								const id = createShapeId("img");
-								const combined: ImageShape = {
+								const newShape: ImageShape = {
 									id,
 									type: "image",
-									x: Math.round(bbox.x),
-									y: Math.round(bbox.y),
-									width: Math.max(1, Math.ceil(bbox.width)),
-									height: Math.max(1, Math.ceil(bbox.height)),
-									href: fused.dataUrl,
+									x: 0,
+									y: 0,
+									width: design.width,
+									height: design.height,
+									href: result.storageUrl,
 								};
-								// Delete originals and add combined
-								for (const orig of originals) {
-									deleteShapeOp(orig);
-								}
-								addShapeOp(combined);
+								addShapeOp(newShape);
+								// Select the new image
 								setSelectedId(id);
 								setSelectedIds([id]);
 							} catch (err) {
-								console.log("fuseCanvasImages failed", err);
+								console.error("combineSelection failed:", err);
 							}
 						}
 					}
@@ -727,11 +731,11 @@ function SingleDesignCanvas({
 		},
 		[
 			selectedId,
-			selectedIds,
 			shapes,
+			design.width,
+			design.height,
 			generateCanvasImage,
 			editCanvasImage,
-			fuseCanvasImages,
 			addShapeOp,
 			updateShapeOp,
 			deleteShapeOp,
@@ -934,7 +938,11 @@ function SingleDesignCanvas({
 				if (s.type !== "path") return s;
 				const lastPt = s.points[s.points.length - 1];
 				// Only add point if moved enough (reduces point count)
-				if (lastPt && Math.hypot(x - lastPt.x, y - lastPt.y) < SIZES.minPointDistance) return s;
+				if (
+					lastPt &&
+					Math.hypot(x - lastPt.x, y - lastPt.y) < SIZES.minPointDistance
+				)
+					return s;
 				return { ...s, points: [...s.points, { x, y }] };
 			});
 			return;
@@ -981,16 +989,42 @@ function SingleDesignCanvas({
 					const corner = activeHandle.corner as Corner;
 					const orig = interactionOriginalRef.current;
 
-					if (s.type === "rect" || s.type === "ellipse" || s.type === "image" || s.type === "svg") {
-						const origBounds = orig && "width" in orig
-							? { x: orig.x, y: orig.y, width: orig.width, height: orig.height }
-							: { x: s.x, y: s.y, width: s.width, height: s.height };
-						return resizeRectShape(s, origBounds, corner, x, y, preserveAspectRatio);
+					if (
+						s.type === "rect" ||
+						s.type === "ellipse" ||
+						s.type === "image" ||
+						s.type === "svg"
+					) {
+						const origBounds =
+							orig && "width" in orig
+								? {
+										x: orig.x,
+										y: orig.y,
+										width: orig.width,
+										height: orig.height,
+									}
+								: { x: s.x, y: s.y, width: s.width, height: s.height };
+						return resizeRectShape(
+							s,
+							origBounds,
+							corner,
+							x,
+							y,
+							preserveAspectRatio,
+						);
 					}
 
 					if (s.type === "path") {
-						if (!orig || orig.type !== "path" || orig.points.length === 0) return s;
-						return resizePathShape(s, orig.points, corner, x, y, preserveAspectRatio);
+						if (!orig || orig.type !== "path" || orig.points.length === 0)
+							return s;
+						return resizePathShape(
+							s,
+							orig.points,
+							corner,
+							x,
+							y,
+							preserveAspectRatio,
+						);
 					}
 				}
 
@@ -1556,7 +1590,14 @@ function SingleDesignCanvas({
 											imageContext: context.dataUrl,
 											contextDescription: context.description,
 										});
-										applyCommandGroup(res.commands, { recordUndo: true });
+										applyCommandGroup(
+											res.commands,
+											{ recordUndo: true },
+											{
+												userPrompt: rcText.trim(),
+												canvasDataUrl: context.dataUrl,
+											},
+										);
 										setLassoPending(null);
 										setRcOpen(false);
 									})()
@@ -1616,7 +1657,14 @@ function SingleDesignCanvas({
 											imageContext: context.dataUrl,
 											contextDescription: context.description,
 										});
-										applyCommandGroup(res.commands, { recordUndo: true });
+										applyCommandGroup(
+											res.commands,
+											{ recordUndo: true },
+											{
+												userPrompt: rcText.trim(),
+												canvasDataUrl: context.dataUrl,
+											},
+										);
 										setLassoPending(null);
 										setRcOpen(false);
 									})()
@@ -1643,6 +1691,7 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			tool,
 			onToolChange,
 			onUndoStackChange,
+			onSelectionChange,
 		},
 		ref,
 	) {
@@ -1654,6 +1703,19 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 
 		// Store undo functions per design
 		const undoFunctionsRef = useRef<Map<string, () => boolean>>(new Map());
+
+		// Store layer operations per design
+		const layerOpsRef = useRef<
+			Map<
+				string,
+				{
+					moveUp: () => void;
+					moveDown: () => void;
+					deleteSelection: () => void;
+					hasSelection: () => boolean;
+				}
+			>
+		>(new Map());
 
 		// Track which design can undo - using ref for synchronous comparison to prevent infinite loops
 		const canUndoMapRef = useRef<Map<string, boolean>>(new Map());
@@ -1677,6 +1739,26 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			canUndo: () => {
 				if (!activeDesignId) return false;
 				return canUndoMap.get(activeDesignId) ?? false;
+			},
+			hasSelection: () => {
+				if (!activeDesignId) return false;
+				const ops = layerOpsRef.current.get(activeDesignId);
+				return ops?.hasSelection() ?? false;
+			},
+			moveSelectionUp: () => {
+				if (!activeDesignId) return;
+				const ops = layerOpsRef.current.get(activeDesignId);
+				ops?.moveUp();
+			},
+			moveSelectionDown: () => {
+				if (!activeDesignId) return;
+				const ops = layerOpsRef.current.get(activeDesignId);
+				ops?.moveDown();
+			},
+			deleteSelection: () => {
+				if (!activeDesignId) return;
+				const ops = layerOpsRef.current.get(activeDesignId);
+				ops?.deleteSelection();
 			},
 		}));
 
@@ -1708,6 +1790,22 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 			[],
 		);
 
+		// Stable callback for registering layer operations
+		const handleRegisterLayerOps = useCallback(
+			(
+				designId: string,
+				ops: {
+					moveUp: () => void;
+					moveDown: () => void;
+					deleteSelection: () => void;
+					hasSelection: () => boolean;
+				},
+			) => {
+				layerOpsRef.current.set(designId, ops);
+			},
+			[],
+		);
+
 		return (
 			<div className="flex-1 overflow-x-auto overflow-y-hidden p-6">
 				<div className="flex gap-6 min-w-min">
@@ -1722,6 +1820,8 @@ export const DesignCanvas = forwardRef<DesignCanvasRef, DesignCanvasProps>(
 							clientId={clientIdRef.current}
 							onCanUndoChange={handleCanUndoChange}
 							registerUndo={handleRegisterUndo}
+							onSelectionChange={onSelectionChange}
+							registerLayerOps={handleRegisterLayerOps}
 						/>
 					))}
 				</div>

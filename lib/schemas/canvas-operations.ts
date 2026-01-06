@@ -63,6 +63,11 @@ export const imageShapeSchema = baseShapeSchema.extend({
 	href: z.string(),
 });
 
+export const pathShapeSchema = baseShapeSchema.extend({
+	type: z.literal("path"),
+	points: z.array(z.object({ x: z.number(), y: z.number() })),
+});
+
 export const canvasShapeSchema = z.discriminatedUnion("type", [
 	rectShapeSchema,
 	ellipseShapeSchema,
@@ -70,6 +75,7 @@ export const canvasShapeSchema = z.discriminatedUnion("type", [
 	textShapeSchema,
 	svgShapeSchema,
 	imageShapeSchema,
+	pathShapeSchema,
 ]);
 
 export type CanvasShapeSchema = z.infer<typeof canvasShapeSchema>;

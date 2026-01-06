@@ -1,6 +1,8 @@
 "use client";
 
 import {
+	ArrowDown,
+	ArrowUp,
 	Circle,
 	LassoSelect,
 	Minus,
@@ -8,6 +10,7 @@ import {
 	Pencil,
 	RotateCw,
 	Square,
+	Trash2,
 	Type as TypeIcon,
 	Undo2,
 } from "lucide-react";
@@ -20,6 +23,11 @@ export interface CanvasToolbarProps {
 	onUndo?: () => void;
 	onResetView?: () => void;
 	canUndo?: boolean;
+	/** Whether there's a selection (enables layer/delete buttons) */
+	hasSelection?: boolean;
+	onMoveUp?: () => void;
+	onMoveDown?: () => void;
+	onDelete?: () => void;
 }
 
 export function CanvasToolbar({
@@ -28,6 +36,10 @@ export function CanvasToolbar({
 	onUndo,
 	onResetView,
 	canUndo = false,
+	hasSelection = false,
+	onMoveUp,
+	onMoveDown,
+	onDelete,
 }: CanvasToolbarProps) {
 	return (
 		<div className="flex gap-1 p-2 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
@@ -80,7 +92,37 @@ export function CanvasToolbar({
 			>
 				<LassoSelect className="w-4 h-4" />
 			</ToolbarButton>
+
 			<div className="w-px h-6 bg-slate-300 dark:bg-slate-700 mx-1 self-center" />
+
+			{/* Layer controls */}
+			<ToolbarButton
+				title="Bring Forward"
+				onClick={() => onMoveUp?.()}
+				active={false}
+				disabled={!hasSelection}
+			>
+				<ArrowUp className={`w-4 h-4 ${!hasSelection ? "opacity-40" : ""}`} />
+			</ToolbarButton>
+			<ToolbarButton
+				title="Send Backward"
+				onClick={() => onMoveDown?.()}
+				active={false}
+				disabled={!hasSelection}
+			>
+				<ArrowDown className={`w-4 h-4 ${!hasSelection ? "opacity-40" : ""}`} />
+			</ToolbarButton>
+			<ToolbarButton
+				title="Delete (Del)"
+				onClick={() => onDelete?.()}
+				active={false}
+				disabled={!hasSelection}
+			>
+				<Trash2 className={`w-4 h-4 ${!hasSelection ? "opacity-40" : ""}`} />
+			</ToolbarButton>
+
+			<div className="w-px h-6 bg-slate-300 dark:bg-slate-700 mx-1 self-center" />
+
 			<ToolbarButton
 				title="Undo (Ctrl+Z)"
 				onClick={() => onUndo?.()}

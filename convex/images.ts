@@ -146,7 +146,8 @@ export const generateCanvasImage = action({
 		height: v.optional(v.number()),
 	},
 	returns: v.object({
-		dataUrl: v.string(),
+		storageUrl: v.string(),
+		storageId: v.id("_storage"),
 		mimeType: v.string(),
 		width: v.number(),
 		height: v.number(),
@@ -169,11 +170,24 @@ export const generateCanvasImage = action({
 		});
 		const imageFile = files.at(0);
 		if (!imageFile) throw new Error("Gemini did not return an image");
-		const dataUrl = `data:${imageFile.mediaType};base64,${imageFile.base64}`;
+
+		// Upload to Convex storage instead of returning base64
+		const imageBytes = Buffer.from(imageFile.base64, "base64");
+		const blob = new Blob([imageBytes], { type: imageFile.mediaType });
+		const storageId = await ctx.storage.store(blob);
+		const storageUrl = await ctx.storage.getUrl(storageId);
+		if (!storageUrl) throw new Error("Failed to get storage URL");
+
 		// We don't know exact dimensions here; default to inputs if provided or 512
 		const width = args.width ?? 512;
 		const height = args.height ?? 512;
-		return { dataUrl, mimeType: imageFile.mediaType, width, height };
+		return {
+			storageUrl,
+			storageId,
+			mimeType: imageFile.mediaType,
+			width,
+			height,
+		};
 	},
 });
 
@@ -192,10 +206,11 @@ export const editCanvasImage = action({
 		prompt: v.string(),
 	},
 	returns: v.object({
-		dataUrl: v.string(),
+		storageUrl: v.string(),
+		storageId: v.id("_storage"),
 		mimeType: v.string(),
 	}),
-	handler: async (_ctx, args) => {
+	handler: async (ctx, args) => {
 		const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 		if (!apiKey) throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY");
 
@@ -219,8 +234,15 @@ export const editCanvasImage = action({
 		console.log("got response from editCanvasImage", files);
 		const imageFile = files[files.length - 1];
 		if (!imageFile) throw new Error("Gemini did not return an edited image");
-		const dataUrl = `data:${imageFile.mediaType};base64,${imageFile.base64}`;
-		return { dataUrl, mimeType: imageFile.mediaType };
+
+		// Upload to Convex storage instead of returning base64
+		const imageBytes = Buffer.from(imageFile.base64, "base64");
+		const blob = new Blob([imageBytes], { type: imageFile.mediaType });
+		const storageId = await ctx.storage.store(blob);
+		const storageUrl = await ctx.storage.getUrl(storageId);
+		if (!storageUrl) throw new Error("Failed to get storage URL");
+
+		return { storageUrl, storageId, mimeType: imageFile.mediaType };
 	},
 });
 

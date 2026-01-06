@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery } from "convex/react";
-import { ArrowLeft, Loader2, Plus } from "lucide-react";
+import { ArrowLeft, Loader2, Plus, X } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +34,7 @@ export default function ProjectEditor() {
 	const project = useQuery(api.projects.getProject, { projectId });
 	const designs = useQuery(api.designs.getDesignsByProject, { projectId });
 	const addDesign = useMutation(api.designs.addDesign);
+	const deleteDesignMutation = useMutation(api.designs.deleteDesign);
 
 	const [activeDesignId, setActiveDesignId] = useState<Id<"designs"> | null>(
 		null,
@@ -47,6 +48,7 @@ export default function ProjectEditor() {
 	// Shared tool state
 	const [tool, setTool] = useState<Tool>("select");
 	const [canUndo, setCanUndo] = useState(false);
+	const [hasSelection, setHasSelection] = useState(false);
 
 	const canvasRef = useRef<DesignCanvasRef>(null);
 
@@ -103,6 +105,39 @@ export default function ProjectEditor() {
 	const handleResetView = useCallback(() => {
 		canvasRef.current?.resetView();
 	}, []);
+
+	const handleSelectionChange = useCallback((selected: boolean) => {
+		setHasSelection(selected);
+	}, []);
+
+	const handleMoveUp = useCallback(() => {
+		canvasRef.current?.moveSelectionUp();
+	}, []);
+
+	const handleMoveDown = useCallback(() => {
+		canvasRef.current?.moveSelectionDown();
+	}, []);
+
+	const handleDelete = useCallback(() => {
+		canvasRef.current?.deleteSelection();
+	}, []);
+
+	const handleDeleteDesign = useCallback(
+		async (designId: Id<"designs">) => {
+			if (!designs || designs.length <= 1) return; // Prevent deleting the last design
+
+			// If deleting the active design, switch to another one first
+			if (activeDesignId === designId) {
+				const otherDesign = designs.find((d) => d._id !== designId);
+				if (otherDesign) {
+					setActiveDesignId(otherDesign._id);
+				}
+			}
+
+			await deleteDesignMutation({ designId });
+		},
+		[designs, activeDesignId, deleteDesignMutation],
+	);
 
 	// Loading state
 	if (project === undefined || designs === undefined) {
@@ -169,24 +204,41 @@ export default function ProjectEditor() {
 			</header>
 
 			{/* Design tabs */}
-			{designs.length > 1 && (
+			{designs.length > 0 && (
 				<div className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 py-2 flex gap-2 overflow-x-auto">
 					{designs.map((design) => (
-						<button
-							type="button"
+						<div
 							key={design._id}
-							onClick={() => setActiveDesignId(design._id)}
-							className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
+							className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap ${
 								activeDesignId === design._id
 									? "bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300"
 									: "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
 							}`}
 						>
-							{design.name}
-							<span className="ml-2 text-xs opacity-60">
-								{design.width}×{design.height}
-							</span>
-						</button>
+							<button
+								type="button"
+								onClick={() => setActiveDesignId(design._id)}
+								className="flex items-center"
+							>
+								{design.name}
+								<span className="ml-2 text-xs opacity-60">
+									{design.width}×{design.height}
+								</span>
+							</button>
+							{designs.length > 1 && (
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										void handleDeleteDesign(design._id);
+									}}
+									className="ml-1 p-0.5 rounded hover:bg-red-100 dark:hover:bg-red-900/30 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+									title="Delete design"
+								>
+									<X className="w-3.5 h-3.5" />
+								</button>
+							)}
+						</div>
 					))}
 				</div>
 			)}
@@ -198,6 +250,10 @@ export default function ProjectEditor() {
 				onUndo={handleUndo}
 				onResetView={handleResetView}
 				canUndo={canUndo}
+				hasSelection={hasSelection}
+				onMoveUp={handleMoveUp}
+				onMoveDown={handleMoveDown}
+				onDelete={handleDelete}
 			/>
 
 			{/* Canvas area - operations are saved directly via CRDT */}
@@ -212,6 +268,7 @@ export default function ProjectEditor() {
 					tool={tool}
 					onToolChange={setTool}
 					onUndoStackChange={handleUndoStackChange}
+					onSelectionChange={handleSelectionChange}
 				/>
 			)}
 

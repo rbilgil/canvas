@@ -191,6 +191,58 @@ export const updateDesignDimensions = mutation({
 	},
 });
 
+// Add a new design with an initial image shape (using storage URL)
+export const addDesignWithImage = mutation({
+	args: {
+		projectId: v.id("projects"),
+		name: v.string(),
+		width: v.number(),
+		height: v.number(),
+		imageUrl: v.string(), // Storage URL for the image
+	},
+	returns: v.id("designs"),
+	handler: async (ctx, args) => {
+		const identity = await ctx.auth.getUserIdentity();
+		if (!identity) {
+			throw new Error("Not authenticated");
+		}
+
+		// Verify the user owns this project
+		const project = await ctx.db.get(args.projectId);
+		if (!project || project.userId !== identity.subject) {
+			throw new Error("Project not found");
+		}
+
+		const now = Date.now();
+
+		// Create image shape with the storage URL
+		const imageShape = {
+			id: `img_${now}_${Math.random().toString(36).slice(2, 9)}`,
+			type: "image" as const,
+			x: 0,
+			y: 0,
+			width: args.width,
+			height: args.height,
+			href: args.imageUrl,
+		};
+
+		const designId = await ctx.db.insert("designs", {
+			projectId: args.projectId,
+			name: args.name,
+			width: args.width,
+			height: args.height,
+			config: { shapes: [imageShape] },
+			createdAt: now,
+			updatedAt: now,
+		});
+
+		// Update project's updatedAt
+		await ctx.db.patch(args.projectId, { updatedAt: now });
+
+		return designId;
+	},
+});
+
 // Delete a design
 export const deleteDesign = mutation({
 	args: { designId: v.id("designs") },

@@ -39,6 +39,16 @@ function getShapeBounds(s: CanvasShape): {
 		const h = s.fontSize * 1.4;
 		return { x: s.x, y: s.y, width: w, height: h };
 	}
+	if (s.type === "path") {
+		if (s.points.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+		const xs = s.points.map((p) => p.x);
+		const ys = s.points.map((p) => p.y);
+		const minX = Math.min(...xs);
+		const minY = Math.min(...ys);
+		const maxX = Math.max(...xs);
+		const maxY = Math.max(...ys);
+		return { x: minX, y: minY, width: maxX - minX || 1, height: maxY - minY || 1 };
+	}
 	return { x: 0, y: 0, width: 0, height: 0 };
 }
 
@@ -160,6 +170,19 @@ async function renderShapeToCanvas(
 			img.onerror = () => resolve();
 			img.src = `data:image/svg+xml;utf8,${encodeURIComponent(shape.svg)}`;
 		});
+	} else if (shape.type === "path") {
+		if (shape.points.length >= 2) {
+			ctx.beginPath();
+			ctx.moveTo(shape.points[0].x - offsetX, shape.points[0].y - offsetY);
+			for (let i = 1; i < shape.points.length; i++) {
+				ctx.lineTo(shape.points[i].x - offsetX, shape.points[i].y - offsetY);
+			}
+			ctx.strokeStyle = shape.stroke || "#0f172a";
+			ctx.lineWidth = shape.strokeWidth || 4;
+			ctx.lineCap = "round";
+			ctx.lineJoin = "round";
+			ctx.stroke();
+		}
 	}
 
 	ctx.restore();
