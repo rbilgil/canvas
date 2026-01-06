@@ -24,6 +24,7 @@ import {
 	serializeOperation,
 } from "@/components/canvas/operations";
 import { PropertiesPanel } from "@/components/canvas/PropertiesPanel";
+import { renderCanvasContext } from "@/components/canvas/renderContext";
 import { ShapeView } from "@/components/canvas/ShapeView";
 import {
 	createEllipse,
@@ -260,7 +261,7 @@ function SingleDesignCanvas({
 	>([]);
 	const [lassoImageId, setLassoImageId] = useState<string | null>(null);
 	const [lassoPending, setLassoPending] = useState<null | {
-		imageId: string;
+		imageId: string | null; // null means general context, string means image-specific edit
 		points: Array<{ x: number; y: number }>;
 	}>(null);
 
@@ -903,6 +904,13 @@ function SingleDesignCanvas({
 			setSelectedIds([]);
 			setMarquee({ x, y, width: 0, height: 0 });
 		}
+
+		if (tool === "lasso") {
+			// Start lasso on empty canvas (for general context selection)
+			setIsLassoing(true);
+			setLassoPoints([{ x, y }]);
+			setLassoImageId(null); // No specific image target
+		}
 	};
 
 	const handleContextMenu = (e: React.MouseEvent) => {
@@ -1085,10 +1093,15 @@ function SingleDesignCanvas({
 
 		if (isLassoing) {
 			setIsLassoing(false);
-			if (lassoImageId && lassoPoints.length > 2) {
+			if (lassoPoints.length > 2) {
+				// Store lasso state - imageId is null for general context, string for image edit
 				setLassoPending({ imageId: lassoImageId, points: lassoPoints });
 				setRcText("");
-				setRcPlaceholder("Describe edit for selected region…");
+				setRcPlaceholder(
+					lassoImageId
+						? "Describe edit for selected region…"
+						: "Describe what to do with this area…",
+				);
 				const cx =
 					lassoPoints.reduce((a, p) => a + p.x, 0) / lassoPoints.length;
 				const cy =
@@ -1531,7 +1544,8 @@ function SingleDesignCanvas({
 									if (!rcText.trim() || rcBusy) return;
 									setRcBusy(true);
 									void (async () => {
-										if (lassoPending) {
+										if (lassoPending?.imageId) {
+											// Image-specific lasso edit
 											await runLassoEdit(
 												lassoPending.imageId,
 												lassoPending.points,
@@ -1541,14 +1555,36 @@ function SingleDesignCanvas({
 											setRcOpen(false);
 											return;
 										}
-										const res = await interpret({ input: rcText.trim() });
+
+										// Render visual context for AI
+										// Use lasso points for context if available, otherwise selection
+										const context = await renderCanvasContext({
+											shapes,
+											canvasWidth: design.width,
+											canvasHeight: design.height,
+											selectedIds:
+												!lassoPending && selectedIds.length > 0
+													? selectedIds
+													: !lassoPending && selectedId
+														? [selectedId]
+														: undefined,
+											lassoPoints: lassoPending?.points,
+										});
+
+										const res = await interpret({
+											input: rcText.trim(),
+											imageContext: context.dataUrl,
+											contextDescription: context.description,
+										});
 										applyCommandGroup(res.commands, { recordUndo: true });
+										setLassoPending(null);
 										setRcOpen(false);
 									})()
 										.catch(() => {})
 										.finally(() => setRcBusy(false));
 								}
 								if (e.key === "Escape") {
+									setLassoPending(null);
 									setRcOpen(false);
 								}
 							}}
@@ -1568,7 +1604,8 @@ function SingleDesignCanvas({
 									if (!rcText.trim() || rcBusy) return;
 									setRcBusy(true);
 									void (async () => {
-										if (lassoPending) {
+										if (lassoPending?.imageId) {
+											// Image-specific lasso edit
 											await runLassoEdit(
 												lassoPending.imageId,
 												lassoPending.points,
@@ -1578,8 +1615,29 @@ function SingleDesignCanvas({
 											setRcOpen(false);
 											return;
 										}
-										const res = await interpret({ input: rcText.trim() });
+
+										// Render visual context for AI
+										// Use lasso points for context if available, otherwise selection
+										const context = await renderCanvasContext({
+											shapes,
+											canvasWidth: design.width,
+											canvasHeight: design.height,
+											selectedIds:
+												!lassoPending && selectedIds.length > 0
+													? selectedIds
+													: !lassoPending && selectedId
+														? [selectedId]
+														: undefined,
+											lassoPoints: lassoPending?.points,
+										});
+
+										const res = await interpret({
+											input: rcText.trim(),
+											imageContext: context.dataUrl,
+											contextDescription: context.description,
+										});
 										applyCommandGroup(res.commands, { recordUndo: true });
+										setLassoPending(null);
 										setRcOpen(false);
 									})()
 										.catch(() => {})

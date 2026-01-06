@@ -104,7 +104,13 @@ const CommandSchema = z.discriminatedUnion("tool", [
 export type CanvasCommand = z.infer<typeof CommandSchema>;
 
 export const interpret = action({
-	args: { input: v.string() },
+	args: {
+		input: v.string(),
+		// Optional visual context as base64 data URL
+		imageContext: v.optional(v.string()),
+		// Description of what the image shows (e.g., "selected rect shape", "full canvas")
+		contextDescription: v.optional(v.string()),
+	},
 	returns: v.object({
 		commands: v.array(
 			v.union(
@@ -160,9 +166,10 @@ export const interpret = action({
 		),
 	}),
 	handler: async (_ctx, args) => {
-		const model = selectModel();
+		// Validate model is configured (throws if not)
+		selectModel();
 
-		const system = [
+		const systemParts = [
 			"You are a UI copilot for a vector canvas app.",
 			'Return ONLY JSON of the form {"commands": [...]}. No prose, no code fences.',
 			"If the user's intent is ambiguous, make a sensible default.",
@@ -170,17 +177,40 @@ export const interpret = action({
 			"For resize: prefer scale if user says 'bigger/smaller'; otherwise set width/height explicitly if mentioned.",
 			"For move: dx/dy are pixels; positive dx moves right, positive dy moves down.",
 			"For changeColor: support either fill, stroke, or both. Colors MUST be HEX codes only (#RRGGBB or #RGB). Never return names or rgba/hsl. If unsure, omit the property.",
-			"You can also generate SVG art: use the generateSvg tool with fields {id, svg, x?, y?, width?, height?}. Return a valid, self-contained <svg>...</svg> string in svg.",
+			"You can also generate SVG art: use the generateSvg tool with fields {id, svg, x?, y?, height?}. Return a valid, self-contained <svg>...</svg> string in svg.",
 			'To merge currently selected shapes into one raster image, return a single command: {"tool": "combineSelection"}.',
-		].join("\n");
+		];
 
-		// Stream object so we can log partial output as it arrives
+		// Add context description if provided
+		if (args.contextDescription) {
+			systemParts.push(
+				`\nYou are looking at: ${args.contextDescription}. Use this visual context to understand what the user is referring to.`,
+			);
+		}
+
+		const system = systemParts.join("\n");
+
+		// Build message content - text and optionally image
+		const userContent: Array<
+			{ type: "text"; text: string } | { type: "image"; image: string }
+		> = [];
+
+		// Add image context if provided
+		if (args.imageContext) {
+			userContent.push({
+				type: "image",
+				image: args.imageContext,
+			});
+		}
+
+		// Add user text
+		userContent.push({ type: "text", text: args.input });
+
+		// Generate structured output
 		const { object } = await generateObject({
 			model: "google/gemini-3-flash",
 			system,
-			messages: [
-				{ role: "user", content: [{ type: "text", text: args.input }] },
-			],
+			messages: [{ role: "user", content: userContent }],
 			schema: z.object({ commands: z.array(CommandSchema) }).strict(),
 			temperature: 0.1,
 			maxRetries: 3,
