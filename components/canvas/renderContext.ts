@@ -5,7 +5,7 @@
 import type { CanvasShape } from "./types";
 
 // Maximum dimension for context images (keeps them efficient to transfer)
-const MAX_CONTEXT_SIZE = 512;
+const MAX_CONTEXT_SIZE = 1024;
 
 /**
  * Get the bounding box of a shape
@@ -159,7 +159,26 @@ async function renderShapeToCanvas(
 			const img = new Image();
 			img.crossOrigin = "anonymous";
 			img.onload = () => {
-				ctx.drawImage(img, x, y, shape.width, shape.height);
+				// Mimic SVG <image> default preserveAspectRatio="xMidYMid meet" behavior:
+				// Scale image to fit within shape bounds while preserving aspect ratio, centered
+				const imgAspect = img.naturalWidth / img.naturalHeight;
+				const shapeAspect = shape.width / shape.height;
+				let drawWidth = shape.width;
+				let drawHeight = shape.height;
+				let drawX = x;
+				let drawY = y;
+
+				if (imgAspect > shapeAspect) {
+					// Image is wider than shape - fit to width, center vertically
+					drawHeight = shape.width / imgAspect;
+					drawY = y + (shape.height - drawHeight) / 2;
+				} else {
+					// Image is taller than shape - fit to height, center horizontally
+					drawWidth = shape.height * imgAspect;
+					drawX = x + (shape.width - drawWidth) / 2;
+				}
+
+				ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
 				resolve();
 			};
 			img.onerror = () => resolve();

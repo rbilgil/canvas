@@ -253,6 +253,9 @@ function SingleDesignCanvas({
 	const editCanvasImage = useAction(api.images.editCanvasImage);
 	const uploadImage = useAction(api.images.uploadImage);
 
+	// Loading state for async operations (image generation, etc.)
+	const [isProcessing, setIsProcessing] = useState(false);
+
 	// Lasso tool state
 	const [isLassoing, setIsLassoing] = useState(false);
 	const [lassoPoints, setLassoPoints] = useState<
@@ -657,111 +660,123 @@ function SingleDesignCanvas({
 			}
 
 			if (imageCommands.length > 0) {
+				setIsProcessing(true);
 				void (async () => {
-					for (const cmd of imageCommands) {
-						if (cmd.tool === "generateImage") {
-							const prompt = cmd.prompt || "";
-							const res = await generateCanvasImage({
-								prompt,
-								width: cmd.width,
-								height: cmd.height,
-								// Pass canvas context as reference if available
-								referenceImageUrl: context?.canvasDataUrl,
-							});
-							const id = cmd.id || createShapeId("img");
-							const newShape: ImageShape = {
-								id,
-								type: "image",
-								x: cmd.x ?? 40,
-								y: cmd.y ?? 40,
-								width: res.width,
-								height: res.height,
-								href: res.storageUrl, // Use storage URL instead of base64
-							};
-							addShapeOp(newShape);
-						} else if (cmd.tool === "editImage") {
-							const id = cmd.id || selectedId;
-							if (!id || !cmd.prompt) continue;
-							const before = shapes.find(
-								(s): s is ImageShape => s.id === id && s.type === "image",
-							);
-							if (!before) continue;
-							const res = await editCanvasImage({
-								imageUrl: before.href,
-								prompt: cmd.prompt,
-							});
-							updateShapeOp(before.id, before, { href: res.storageUrl });
-						} else if (cmd.tool === "combineSelection") {
-							// Generate a new image from selected elements (or full canvas if nothing selected)
-							if (!context?.userPrompt) {
-								console.log("combineSelection: missing prompt");
-								continue;
-							}
-
-							try {
-								// Determine which shapes to render
-								const idsToRender =
-									selectedIds.length > 0
-										? selectedIds
-										: selectedId
-											? [selectedId]
-											: undefined; // undefined = full canvas
-
-								const renderContext = await renderCanvasContext({
-									shapes,
-									canvasWidth: design.width,
-									canvasHeight: design.height,
-									selectedIds: idsToRender,
+					try {
+						for (const cmd of imageCommands) {
+							if (cmd.tool === "generateImage") {
+								const prompt = cmd.prompt || "";
+								const res = await generateCanvasImage({
+									prompt,
+									width: cmd.width,
+									height: cmd.height,
+									// Pass canvas context as reference if available
+									referenceImageUrl: context?.canvasDataUrl,
 								});
-
-								// Calculate bounds to position the result
-								let bounds = { x: 0, y: 0, width: design.width, height: design.height };
-								if (idsToRender && idsToRender.length > 0) {
-									const selectedShapes = shapes.filter((s) =>
-										idsToRender.includes(s.id),
-									);
-									if (selectedShapes.length > 0) {
-										const xs = selectedShapes.map((s) => s.x);
-										const ys = selectedShapes.map((s) => s.y);
-										const x2s = selectedShapes.map((s) =>
-											"width" in s ? s.x + s.width : s.x,
-										);
-										const y2s = selectedShapes.map((s) =>
-											"height" in s ? s.y + s.height : s.y,
-										);
-										bounds = {
-											x: Math.min(...xs),
-											y: Math.min(...ys),
-											width: Math.max(...x2s) - Math.min(...xs),
-											height: Math.max(...y2s) - Math.min(...ys),
-										};
-									}
-								}
-
-								const result = await generateCanvasImage({
-									prompt: context.userPrompt,
-									referenceImageUrl: renderContext.dataUrl,
-								});
-
-								// Add the generated image as a new shape, using actual result dimensions
-								const id = createShapeId("img");
+								const id = cmd.id || createShapeId("img");
 								const newShape: ImageShape = {
 									id,
 									type: "image",
-									x: bounds.x,
-									y: bounds.y,
-									width: result.width,
-									height: result.height,
-									href: result.storageUrl,
+									x: cmd.x ?? 40,
+									y: cmd.y ?? 40,
+									width: res.width,
+									height: res.height,
+									href: res.storageUrl, // Use storage URL instead of base64
 								};
 								addShapeOp(newShape);
-								// Select the new image
-								setSelectedId(id);
-								setSelectedIds([id]);
-							} catch (err) {
-								console.error("combineSelection failed:", err);
+							} else if (cmd.tool === "editImage") {
+								const id = cmd.id || selectedId;
+								if (!id || !cmd.prompt) continue;
+								const before = shapes.find(
+									(s): s is ImageShape => s.id === id && s.type === "image",
+								);
+								if (!before) continue;
+								const res = await editCanvasImage({
+									imageUrl: before.href,
+									prompt: cmd.prompt,
+								});
+								updateShapeOp(before.id, before, { href: res.storageUrl });
+							} else if (cmd.tool === "combineSelection") {
+								// Generate a new image from selected elements (or full canvas if nothing selected)
+								if (!context?.userPrompt) {
+									console.log("combineSelection: missing prompt");
+									continue;
+								}
+
+								console.log("combineSelection", context?.userPrompt);
+
+								try {
+									// Determine which shapes to render
+									const idsToRender =
+										selectedIds.length > 0
+											? selectedIds
+											: selectedId
+												? [selectedId]
+												: undefined; // undefined = full canvas
+
+									const renderContext = await renderCanvasContext({
+										shapes,
+										canvasWidth: design.width,
+										canvasHeight: design.height,
+										selectedIds: idsToRender,
+									});
+
+									// Calculate bounds to position the result
+									let bounds = {
+										x: 0,
+										y: 0,
+										width: design.width,
+										height: design.height,
+									};
+									if (idsToRender && idsToRender.length > 0) {
+										const selectedShapes = shapes.filter((s) =>
+											idsToRender.includes(s.id),
+										);
+										if (selectedShapes.length > 0) {
+											const xs = selectedShapes.map((s) => s.x);
+											const ys = selectedShapes.map((s) => s.y);
+											const x2s = selectedShapes.map((s) =>
+												"width" in s ? s.x + s.width : s.x,
+											);
+											const y2s = selectedShapes.map((s) =>
+												"height" in s ? s.y + s.height : s.y,
+											);
+											bounds = {
+												x: Math.min(...xs),
+												y: Math.min(...ys),
+												width: Math.max(...x2s) - Math.min(...xs),
+												height: Math.max(...y2s) - Math.min(...ys),
+											};
+										}
+									}
+
+									const result = await generateCanvasImage({
+										prompt: context.userPrompt,
+										referenceImageUrl: renderContext.dataUrl,
+									});
+
+									// Add the generated image as a new shape, using actual result dimensions
+									const id = createShapeId("img");
+									const newShape: ImageShape = {
+										id,
+										type: "image",
+										x: bounds.x,
+										y: bounds.y,
+										width: result.width,
+										height: result.height,
+										href: result.storageUrl,
+									};
+									addShapeOp(newShape);
+									// Select the new image
+									setSelectedId(id);
+									setSelectedIds([id]);
+								} catch (err) {
+									console.error("combineSelection failed:", err);
+								}
 							}
 						}
+					} finally {
+						setIsProcessing(false);
 					}
 				})();
 			}
@@ -1359,12 +1374,17 @@ function SingleDesignCanvas({
 			points: Array<{ x: number; y: number }>,
 			prompt: string,
 		) => {
-			await externalRunLassoEdit(imageId, points, prompt, {
-				shapes,
-				setShapes,
-				setUndoStack: () => {}, // Undo handled differently now
-				editCanvasImage,
-			});
+			setIsProcessing(true);
+			try {
+				await externalRunLassoEdit(imageId, points, prompt, {
+					shapes,
+					setShapes,
+					setUndoStack: () => {}, // Undo handled differently now
+					editCanvasImage,
+				});
+			} finally {
+				setIsProcessing(false);
+			}
 		},
 		[shapes, editCanvasImage],
 	);
@@ -1559,7 +1579,36 @@ function SingleDesignCanvas({
 				}}
 				onClick={() => onActivate(design.id)}
 			>
-				{isActive && (
+				{/* Loading spinner - top right corner */}
+				{isProcessing && (
+					<div className="absolute right-3 top-3 z-30 flex items-center gap-2 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-full px-3 py-1.5 shadow-lg border border-slate-200 dark:border-slate-700">
+						<svg
+							className="animate-spin h-4 w-4 text-violet-600"
+							xmlns="http://www.w3.org/2000/svg"
+							fill="none"
+							viewBox="0 0 24 24"
+						>
+							<circle
+								className="opacity-25"
+								cx="12"
+								cy="12"
+								r="10"
+								stroke="currentColor"
+								strokeWidth="4"
+							/>
+							<path
+								className="opacity-75"
+								fill="currentColor"
+								d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+							/>
+						</svg>
+						<span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+							Generating...
+						</span>
+					</div>
+				)}
+
+				{isActive && !isProcessing && (
 					<div className="absolute right-2 top-2 z-20">
 						<PropertiesPanel
 							selectedShape={selectedShape}
@@ -1759,6 +1808,7 @@ function SingleDesignCanvas({
 									e.preventDefault();
 									if (!rcText.trim() || rcBusy) return;
 									setRcBusy(true);
+									setIsProcessing(true);
 									void (async () => {
 										if (lassoPending?.imageId) {
 											// Image-specific lasso edit
@@ -1830,7 +1880,10 @@ function SingleDesignCanvas({
 										setRcOpen(false);
 									})()
 										.catch(() => {})
-										.finally(() => setRcBusy(false));
+										.finally(() => {
+											setRcBusy(false);
+											setIsProcessing(false);
+										});
 								}
 								if (e.key === "Escape") {
 									setLassoPending(null);
@@ -1852,6 +1905,7 @@ function SingleDesignCanvas({
 								onClick={() => {
 									if (!rcText.trim() || rcBusy) return;
 									setRcBusy(true);
+									setIsProcessing(true);
 									void (async () => {
 										if (lassoPending?.imageId) {
 											// Image-specific lasso edit
@@ -1923,7 +1977,10 @@ function SingleDesignCanvas({
 										setRcOpen(false);
 									})()
 										.catch(() => {})
-										.finally(() => setRcBusy(false));
+										.finally(() => {
+											setRcBusy(false);
+											setIsProcessing(false);
+										});
 								}}
 							>
 								{rcBusy ? "Working…" : "Run"}

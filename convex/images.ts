@@ -109,7 +109,7 @@ export const generatePortraits = action({
 		const portraits = await Promise.all(
 			PORTRAIT_STYLES.map(async (style) => {
 				const { files } = await generateText({
-					model: "google/gemini-2.5-flash-image-preview",
+					model: "google/gemini-3-pro-image",
 					messages: makeMessages(style),
 					providerOptions: {
 						google: {
@@ -174,7 +174,7 @@ export const generateCanvasImage = action({
 		content.push({ type: "text", text: args.prompt });
 
 		const { files } = await generateText({
-			model: "google/gemini-2.5-flash-image-preview",
+			model: "google/gemini-3-pro-image",
 			messages: [{ role: "user", content }],
 			providerOptions: {
 				google: { responseModalities: ["IMAGE"] },
@@ -210,7 +210,10 @@ function getImageDimensions(
 	try {
 		if (mimeType === "image/png") {
 			// PNG: width at bytes 16-19, height at bytes 20-23 (big-endian)
-			if (buffer.length >= 24 && buffer.toString("hex", 0, 8) === "89504e470d0a1a0a") {
+			if (
+				buffer.length >= 24 &&
+				buffer.toString("hex", 0, 8) === "89504e470d0a1a0a"
+			) {
 				const width = buffer.readUInt32BE(16);
 				const height = buffer.readUInt32BE(20);
 				return { width, height };
@@ -311,7 +314,7 @@ export const editCanvasImage = action({
 			},
 		];
 		const { files } = await generateText({
-			model: "google/gemini-2.5-flash-image-preview",
+			model: "google/gemini-3-pro-image",
 			messages,
 			providerOptions: {
 				google: { responseModalities: ["IMAGE"] },
@@ -368,7 +371,7 @@ export const fuseCanvasImages = action({
 		];
 
 		const { files: outFiles } = await generateText({
-			model: "google/gemini-2.5-flash-image-preview",
+			model: "google/gemini-3-pro-image",
 			messages,
 			providerOptions: {
 				google: { responseModalities: ["IMAGE"] },
