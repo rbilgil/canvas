@@ -37,6 +37,7 @@ import type {
 	CanvasShape,
 	CanvasToolCommand,
 	ImageShape,
+	PathShape,
 	Tool,
 } from "@/components/canvas/types";
 import {
@@ -139,6 +140,16 @@ function getShapeBounds(s: CanvasShape): {
 		const h = s.fontSize * 1.4;
 		return { x: s.x, y: s.y, width: w, height: h };
 	}
+	if (s.type === "path") {
+		if (s.points.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
+		const xs = s.points.map((p) => p.x);
+		const ys = s.points.map((p) => p.y);
+		const minX = Math.min(...xs);
+		const minY = Math.min(...ys);
+		const maxX = Math.max(...xs);
+		const maxY = Math.max(...ys);
+		return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+	}
 	return {
 		x: (s as { x?: number }).x ?? 0,
 		y: (s as { y?: number }).y ?? 0,
@@ -180,6 +191,7 @@ function SingleDesignCanvas({
 	const [selectedIds, setSelectedIds] = useState<Array<string>>([]);
 	const [isPointerDown, setIsPointerDown] = useState(false);
 	const [draftId, setDraftId] = useState<string | null>(null);
+	const [pencilDraftId, setPencilDraftId] = useState<string | null>(null);
 	const [activeHandle, setActiveHandle] = useState<
 		| null
 		| { kind: "corner"; corner: "nw" | "ne" | "sw" | "se" }
@@ -898,6 +910,23 @@ function SingleDesignCanvas({
 			});
 			return;
 		}
+		if (tool === "draw-pencil") {
+			const id = createShapeId("path");
+			const path: PathShape = {
+				id,
+				type: "path",
+				x: 0,
+				y: 0,
+				points: [{ x, y }],
+				stroke: "#0f172a",
+				strokeWidth: 4,
+			};
+			setShapes((prev) => [...prev, path]);
+			setPencilDraftId(id);
+			// Don't select until drawing is complete (avoids selection box while drawing)
+			createdShapeIdRef.current = id;
+			return;
+		}
 
 		if (tool === "select") {
 			setSelectedId(null);
@@ -946,6 +975,17 @@ function SingleDesignCanvas({
 			return;
 		}
 
+		if (pencilDraftId) {
+			setShapeById(pencilDraftId, (s) => {
+				if (s.type !== "path") return s;
+				const lastPt = s.points[s.points.length - 1];
+				// Only add point if moved enough (reduces point count)
+				if (lastPt && Math.hypot(x - lastPt.x, y - lastPt.y) < 2) return s;
+				return { ...s, points: [...s.points, { x, y }] };
+			});
+			return;
+		}
+
 		if (groupDragRef.current && tool === "select" && selectedIds.length >= 1) {
 			const { startX, startY, originals } = groupDragRef.current;
 			const dx = x - startX;
@@ -962,6 +1002,16 @@ function SingleDesignCanvas({
 							y: o.y + dy,
 							x2: (o as { x2: number }).x2 + dx,
 							y2: (o as { y2: number }).y2 + dy,
+						};
+					}
+					if (o.type === "path") {
+						const origPath = o as PathShape;
+						return {
+							...s,
+							points: origPath.points.map((p) => ({
+								x: p.x + dx,
+								y: p.y + dy,
+							})),
 						};
 					}
 					if ("x" in o && "y" in o) {
@@ -1032,6 +1082,54 @@ function SingleDesignCanvas({
 						width: Math.abs(x2 - x1),
 						height: Math.abs(y2 - y1),
 					};
+				}
+				if (s.type === "path" && activeHandle.kind === "corner") {
+					// Get original bounding box from interactionOriginalRef
+					const orig = interactionOriginalRef.current;
+					if (!orig || orig.type !== "path") return s;
+					const origPoints = orig.points;
+					if (origPoints.length === 0) return s;
+
+					const oxs = origPoints.map((p) => p.x);
+					const oys = origPoints.map((p) => p.y);
+					const oldMinX = Math.min(...oxs);
+					const oldMinY = Math.min(...oys);
+					const oldMaxX = Math.max(...oxs);
+					const oldMaxY = Math.max(...oys);
+					const oldWidth = oldMaxX - oldMinX || 1;
+					const oldHeight = oldMaxY - oldMinY || 1;
+
+					// Calculate new bounding box based on corner being dragged
+					let x1 = oldMinX;
+					let y1 = oldMinY;
+					let x2 = oldMaxX;
+					let y2 = oldMaxY;
+					if (activeHandle.corner === "nw") {
+						x1 = x;
+						y1 = y;
+					} else if (activeHandle.corner === "ne") {
+						x2 = x;
+						y1 = y;
+					} else if (activeHandle.corner === "sw") {
+						x1 = x;
+						y2 = y;
+					} else if (activeHandle.corner === "se") {
+						x2 = x;
+						y2 = y;
+					}
+
+					const newMinX = Math.min(x1, x2);
+					const newMinY = Math.min(y1, y2);
+					const newWidth = Math.abs(x2 - x1) || 1;
+					const newHeight = Math.abs(y2 - y1) || 1;
+
+					// Scale all points from old bbox to new bbox
+					const newPoints = origPoints.map((p) => ({
+						x: newMinX + ((p.x - oldMinX) / oldWidth) * newWidth,
+						y: newMinY + ((p.y - oldMinY) / oldHeight) * newHeight,
+					}));
+
+					return { ...s, points: newPoints };
 				}
 				if (s.type === "line" && activeHandle.kind === "line-end") {
 					if (activeHandle.end === 1) return { ...s, x, y };
@@ -1112,6 +1210,32 @@ function SingleDesignCanvas({
 			}
 			setLassoImageId(null);
 			setLassoPoints([]);
+		}
+
+		// Commit pencil path as operation
+		if (pencilDraftId) {
+			const draft = shapes.find((s) => s.id === pencilDraftId);
+			if (draft && draft.type === "path") {
+				if (draft.points.length < 2) {
+					// Too few points, remove without committing
+					removeShapeById(pencilDraftId);
+					setSelectedId(null);
+					setSelectedIds([]);
+				} else {
+					// Valid path - commit as operation
+					const op = createAddShapeOp(clientId, draft);
+					setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+					pendingOpsRef.current.push(op);
+					scheduleFlush();
+					// Now select the completed path
+					setSelectedId(pencilDraftId);
+					setSelectedIds([pencilDraftId]);
+				}
+			}
+			setPencilDraftId(null);
+			if (tool === "draw-pencil") {
+				onToolChange("select");
+			}
 		}
 
 		// Commit draft shape as operation

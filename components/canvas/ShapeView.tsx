@@ -4,6 +4,7 @@ import type {
 	EllipseShape,
 	ImageShape,
 	LineShape,
+	PathShape,
 	PointerMode,
 	RectShape,
 	SvgShape,
@@ -194,6 +195,51 @@ export function ShapeView({
 			</g>
 		);
 	}
+	if (shape.type === "path") {
+		const s = shape as PathShape;
+		if (s.points.length < 2) return null;
+		const d = s.points
+			.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`)
+			.join(" ");
+		// Compute bounding box for selection frame and hit area
+		const xs = s.points.map((p) => p.x);
+		const ys = s.points.map((p) => p.y);
+		const minX = Math.min(...xs);
+		const minY = Math.min(...ys);
+		const maxX = Math.max(...xs);
+		const maxY = Math.max(...ys);
+		const padding = 4; // Extra padding for easier selection
+		return (
+			<g>
+				{/* Invisible hit area covering bounding box */}
+				<rect
+					x={minX - padding}
+					y={minY - padding}
+					width={maxX - minX + padding * 2}
+					height={maxY - minY + padding * 2}
+					fill="transparent"
+					onPointerDown={(e) => onPointerDown(e, s, "move")}
+					style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+				/>
+				<path
+					d={d}
+					fill="none"
+					stroke={s.stroke || "#0f172a"}
+					strokeWidth={s.strokeWidth || 4}
+					strokeLinecap="round"
+					strokeLinejoin="round"
+					pointerEvents="none"
+				/>
+				{selected && (
+					<SelectionFramePath
+						shape={s}
+						bounds={{ x: minX, y: minY, width: maxX - minX, height: maxY - minY }}
+						onPointerDown={onPointerDown}
+					/>
+				)}
+			</g>
+		);
+	}
 	return null;
 }
 
@@ -244,6 +290,61 @@ export function SelectionFrameRect({
 					}}
 					onPointerDown={(e) =>
 						onPointerDown(e, s as CanvasShape, {
+							resize: hnd.key as "nw" | "ne" | "sw" | "se",
+						})
+					}
+				/>
+			))}
+		</g>
+	);
+}
+
+export function SelectionFramePath({
+	shape,
+	bounds,
+	onPointerDown,
+}: {
+	shape: PathShape;
+	bounds: { x: number; y: number; width: number; height: number };
+	onPointerDown: (
+		e: React.PointerEvent,
+		shape: CanvasShape,
+		mode: PointerMode,
+	) => void;
+}) {
+	const { x, y, width: w, height: h } = bounds;
+	return (
+		<g>
+			<rect
+				x={x}
+				y={y}
+				width={w}
+				height={h}
+				fill="none"
+				stroke="#2563eb"
+				strokeWidth={1}
+				strokeDasharray="4 2"
+			/>
+			{[
+				{ key: "nw", cx: x, cy: y },
+				{ key: "ne", cx: x + w, cy: y },
+				{ key: "sw", cx: x, cy: y + h },
+				{ key: "se", cx: x + w, cy: y + h },
+			].map((hnd) => (
+				<rect
+					key={hnd.key}
+					x={hnd.cx - 4}
+					y={hnd.cy - 4}
+					width={8}
+					height={8}
+					fill="#fff"
+					stroke="#2563eb"
+					strokeWidth={1.5}
+					style={{
+						cursor: `${hnd.key}-resize` as React.CSSProperties["cursor"],
+					}}
+					onPointerDown={(e) =>
+						onPointerDown(e, shape, {
 							resize: hnd.key as "nw" | "ne" | "sw" | "se",
 						})
 					}

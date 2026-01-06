@@ -1,4 +1,4 @@
-export type ShapeType = "rect" | "ellipse" | "line" | "text" | "svg" | "image";
+export type ShapeType = "rect" | "ellipse" | "line" | "text" | "svg" | "image" | "path";
 
 export type BaseShape = {
 	id: string;
@@ -53,13 +53,19 @@ export type ImageShape = BaseShape & {
 	href: string;
 };
 
+export type PathShape = BaseShape & {
+	type: "path";
+	points: Array<{ x: number; y: number }>;
+};
+
 export type CanvasShape =
 	| RectShape
 	| EllipseShape
 	| LineShape
 	| TextShape
 	| SvgShape
-	| ImageShape;
+	| ImageShape
+	| PathShape;
 
 export type CanvasToolCommand = {
 	tool:
@@ -98,6 +104,7 @@ export type Tool =
 	| "draw-ellipse"
 	| "draw-line"
 	| "draw-text"
+	| "draw-pencil"
 	| "lasso";
 
 export type PointerMode =

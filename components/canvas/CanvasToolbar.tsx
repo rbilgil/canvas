@@ -5,6 +5,7 @@ import {
 	LassoSelect,
 	Minus,
 	MousePointer,
+	Pencil,
 	RotateCw,
 	Square,
 	Type as TypeIcon,
@@ -64,6 +65,13 @@ export function CanvasToolbar({
 				onClick={() => onToolChange("draw-text")}
 			>
 				<TypeIcon className="w-4 h-4" />
+			</ToolbarButton>
+			<ToolbarButton
+				title="Pencil (P)"
+				active={tool === "draw-pencil"}
+				onClick={() => onToolChange("draw-pencil")}
+			>
+				<Pencil className="w-4 h-4" />
 			</ToolbarButton>
 			<ToolbarButton
 				title="Image Lasso"
