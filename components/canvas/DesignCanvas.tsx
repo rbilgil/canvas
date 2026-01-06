@@ -1047,6 +1047,7 @@ function SingleDesignCanvas({
 		}
 
 		if (tool === "select" && selectedId && activeHandle) {
+			const shiftKey = e.shiftKey;
 			setShapeById(selectedId, (s) => {
 				if (
 					s.type === "rect" ||
@@ -1054,10 +1055,18 @@ function SingleDesignCanvas({
 					s.type === "image" ||
 					s.type === "svg"
 				) {
-					let x1 = s.x;
-					let y1 = s.y;
-					let x2 = s.x + s.width;
-					let y2 = s.y + s.height;
+					const orig = interactionOriginalRef.current;
+					const origWidth = orig && "width" in orig ? orig.width : s.width;
+					const origHeight = orig && "height" in orig ? orig.height : s.height;
+					const origX = orig ? orig.x : s.x;
+					const origY = orig ? orig.y : s.y;
+					const aspectRatio = origWidth / (origHeight || 1);
+
+					let x1 = origX;
+					let y1 = origY;
+					let x2 = origX + origWidth;
+					let y2 = origY + origHeight;
+
 					if (activeHandle.kind === "corner") {
 						if (activeHandle.corner === "nw") {
 							x1 = x;
@@ -1072,7 +1081,35 @@ function SingleDesignCanvas({
 							x2 = x;
 							y2 = y;
 						}
+
+						// Preserve aspect ratio unless Shift is pressed
+						if (!shiftKey) {
+							const newWidth = Math.abs(x2 - x1);
+							const newHeight = Math.abs(y2 - y1);
+							const widthFromHeight = newHeight * aspectRatio;
+							const heightFromWidth = newWidth / aspectRatio;
+
+							// Use the larger dimension to determine size
+							if (widthFromHeight > newWidth) {
+								// Height is the constraining dimension
+								const adjustedWidth = widthFromHeight;
+								if (activeHandle.corner === "nw" || activeHandle.corner === "sw") {
+									x1 = x2 - (x1 < x2 ? adjustedWidth : -adjustedWidth);
+								} else {
+									x2 = x1 + (x2 > x1 ? adjustedWidth : -adjustedWidth);
+								}
+							} else {
+								// Width is the constraining dimension
+								const adjustedHeight = heightFromWidth;
+								if (activeHandle.corner === "nw" || activeHandle.corner === "ne") {
+									y1 = y2 - (y1 < y2 ? adjustedHeight : -adjustedHeight);
+								} else {
+									y2 = y1 + (y2 > y1 ? adjustedHeight : -adjustedHeight);
+								}
+							}
+						}
 					}
+
 					const newX = Math.min(x1, x2);
 					const newY = Math.min(y1, y2);
 					return {
@@ -1098,6 +1135,7 @@ function SingleDesignCanvas({
 					const oldMaxY = Math.max(...oys);
 					const oldWidth = oldMaxX - oldMinX || 1;
 					const oldHeight = oldMaxY - oldMinY || 1;
+					const aspectRatio = oldWidth / oldHeight;
 
 					// Calculate new bounding box based on corner being dragged
 					let x1 = oldMinX;
@@ -1116,6 +1154,30 @@ function SingleDesignCanvas({
 					} else if (activeHandle.corner === "se") {
 						x2 = x;
 						y2 = y;
+					}
+
+					// Preserve aspect ratio unless Shift is pressed
+					if (!shiftKey) {
+						const newWidth = Math.abs(x2 - x1);
+						const newHeight = Math.abs(y2 - y1);
+						const widthFromHeight = newHeight * aspectRatio;
+						const heightFromWidth = newWidth / aspectRatio;
+
+						if (widthFromHeight > newWidth) {
+							const adjustedWidth = widthFromHeight;
+							if (activeHandle.corner === "nw" || activeHandle.corner === "sw") {
+								x1 = x2 - (x1 < x2 ? adjustedWidth : -adjustedWidth);
+							} else {
+								x2 = x1 + (x2 > x1 ? adjustedWidth : -adjustedWidth);
+							}
+						} else {
+							const adjustedHeight = heightFromWidth;
+							if (activeHandle.corner === "nw" || activeHandle.corner === "ne") {
+								y1 = y2 - (y1 < y2 ? adjustedHeight : -adjustedHeight);
+							} else {
+								y2 = y1 + (y2 > y1 ? adjustedHeight : -adjustedHeight);
+							}
+						}
 					}
 
 					const newMinX = Math.min(x1, x2);
