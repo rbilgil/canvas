@@ -190,6 +190,8 @@ function SingleDesignCanvas({
 	// Track interaction state for operation creation
 	const interactionOriginalRef = useRef<CanvasShape | null>(null);
 	const createdShapeIdRef = useRef<string | null>(null);
+	// Track if we're extending an existing path (vs creating new)
+	const extendingPathRef = useRef<PathShape | null>(null);
 
 	// Operation-based undo stack
 	const [undoStack, setUndoStack] = useState<CanvasOperation[]>([]);
@@ -817,6 +819,84 @@ function SingleDesignCanvas({
 		return svgToClient(svg, x, y);
 	};
 
+	// Find a path shape near the given point (for continuing drawing)
+	// Checks: 1) near any point on the path, 2) along line segments, 3) inside bounding box
+	const findNearbyPath = (
+		x: number,
+		y: number,
+		threshold: number = 15,
+	): PathShape | null => {
+		for (let i = shapes.length - 1; i >= 0; i--) {
+			const shape = shapes[i];
+			if (shape.type !== "path") continue;
+			const path = shape as PathShape;
+			if (path.points.length === 0) continue;
+
+			// Check if near any point on the path
+			for (const pt of path.points) {
+				if (Math.hypot(x - pt.x, y - pt.y) <= threshold) {
+					return path;
+				}
+			}
+
+			// Check along line segments
+			for (let j = 0; j < path.points.length - 1; j++) {
+				const p1 = path.points[j];
+				const p2 = path.points[j + 1];
+				if (pointToSegmentDistance(x, y, p1, p2) <= threshold) {
+					return path;
+				}
+			}
+
+			// Check if inside bounding box (with padding) - for clicking inside shapes
+			const bounds = getPathBounds(path.points);
+			const padding = threshold;
+			if (
+				x >= bounds.minX - padding &&
+				x <= bounds.maxX + padding &&
+				y >= bounds.minY - padding &&
+				y <= bounds.maxY + padding
+			) {
+				return path;
+			}
+		}
+		return null;
+	};
+
+	// Helper: distance from point to line segment
+	const pointToSegmentDistance = (
+		px: number,
+		py: number,
+		p1: { x: number; y: number },
+		p2: { x: number; y: number },
+	): number => {
+		const dx = p2.x - p1.x;
+		const dy = p2.y - p1.y;
+		const lenSq = dx * dx + dy * dy;
+		if (lenSq === 0) return Math.hypot(px - p1.x, py - p1.y);
+		let t = ((px - p1.x) * dx + (py - p1.y) * dy) / lenSq;
+		t = Math.max(0, Math.min(1, t));
+		return Math.hypot(px - (p1.x + t * dx), py - (p1.y + t * dy));
+	};
+
+	// Helper: get bounding box of path points
+	const getPathBounds = (
+		points: Array<{ x: number; y: number }>,
+	): { minX: number; minY: number; maxX: number; maxY: number } => {
+		if (points.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+		let minX = points[0].x,
+			maxX = points[0].x;
+		let minY = points[0].y,
+			maxY = points[0].y;
+		for (const pt of points) {
+			minX = Math.min(minX, pt.x);
+			maxX = Math.max(maxX, pt.x);
+			minY = Math.min(minY, pt.y);
+			maxY = Math.max(maxY, pt.y);
+		}
+		return { minX, minY, maxX, maxY };
+	};
+
 	const handlePointerDown = (e: React.PointerEvent) => {
 		if (e.button !== 0) return;
 		onActivate(design.id);
@@ -869,13 +949,31 @@ function SingleDesignCanvas({
 			return;
 		}
 		if (tool === "draw-pencil") {
+			// Check if clicking near an existing path to continue it
+			const nearbyPath = findNearbyPath(x, y);
+			if (nearbyPath) {
+				// Continue existing path - store original for undo
+				extendingPathRef.current = {
+					...nearbyPath,
+					points: [...nearbyPath.points],
+				};
+				setPencilDraftId(nearbyPath.id);
+				// Add new sub-path starting point (moveTo: true creates a discontinuous stroke)
+				setShapeById(nearbyPath.id, (s) => {
+					if (s.type !== "path") return s;
+					return { ...s, points: [...s.points, { x, y, moveTo: true }] };
+				});
+				return;
+			}
+
+			// Create new path
 			const id = createShapeId("path");
 			const path: PathShape = {
 				id,
 				type: "path",
 				x: 0,
 				y: 0,
-				points: [{ x, y }],
+				points: [{ x, y, moveTo: true }],
 				stroke: SHAPE_DEFAULTS.path.stroke,
 				strokeWidth: SHAPE_DEFAULTS.path.strokeWidth,
 			};
@@ -883,6 +981,7 @@ function SingleDesignCanvas({
 			setPencilDraftId(id);
 			// Don't select until drawing is complete (avoids selection box while drawing)
 			createdShapeIdRef.current = id;
+			extendingPathRef.current = null;
 			return;
 		}
 
@@ -1106,13 +1205,27 @@ function SingleDesignCanvas({
 		if (pencilDraftId) {
 			const draft = shapes.find((s) => s.id === pencilDraftId);
 			if (draft && draft.type === "path") {
-				if (draft.points.length < 2) {
-					// Too few points, remove without committing
-					removeShapeById(pencilDraftId);
-					setSelectedId(null);
-					setSelectedIds([]);
-				} else {
-					// Valid path - commit as operation
+				if (extendingPathRef.current) {
+					// We were extending an existing path - create update operation
+					const original = extendingPathRef.current;
+					const { updates, previousValues } = getShapeChanges(original, draft);
+					if (Object.keys(updates).length > 0) {
+						const op = createUpdateShapeOp(
+							clientId,
+							draft.id,
+							updates,
+							previousValues,
+						);
+						setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
+						pendingOpsRef.current.push(op);
+						scheduleFlush();
+					}
+					// Select the path
+					setSelectedId(pencilDraftId);
+					setSelectedIds([pencilDraftId]);
+					extendingPathRef.current = null;
+				} else if (draft.points.length >= 1) {
+					// Valid new path (even single point for dots) - commit as add operation
 					const op = createAddShapeOp(clientId, draft);
 					setUndoStack((prev) => [...prev, invertOperation(clientId, op)]);
 					pendingOpsRef.current.push(op);
@@ -1120,12 +1233,16 @@ function SingleDesignCanvas({
 					// Now select the completed path
 					setSelectedId(pencilDraftId);
 					setSelectedIds([pencilDraftId]);
+				} else {
+					// No points at all - remove
+					removeShapeById(pencilDraftId);
+					setSelectedId(null);
+					setSelectedIds([]);
 				}
 			}
 			setPencilDraftId(null);
-			if (tool === "draw-pencil") {
-				onToolChange("select");
-			}
+			extendingPathRef.current = null; // Always clear this
+			// Stay in pencil mode to allow continued drawing
 		}
 
 		// Commit draft shape as operation
@@ -1215,12 +1332,50 @@ function SingleDesignCanvas({
 		e.stopPropagation();
 		if (e.button !== 0) return;
 		onActivate(design.id);
+		const { x, y } = svgPoint(e);
+
+		// Handle pencil tool - extend path when clicking on any shape
+		if (tool === "draw-pencil") {
+			setIsPointerDown(true);
+			// Find a path to extend (prioritize the clicked shape if it's a path)
+			const targetPath =
+				shape.type === "path" ? (shape as PathShape) : findNearbyPath(x, y);
+			if (targetPath) {
+				// Continue existing path with a new sub-path
+				extendingPathRef.current = {
+					...targetPath,
+					points: [...targetPath.points],
+				};
+				setPencilDraftId(targetPath.id);
+				setShapeById(targetPath.id, (s) => {
+					if (s.type !== "path") return s;
+					return { ...s, points: [...s.points, { x, y, moveTo: true }] };
+				});
+			} else {
+				// Create new path
+				const id = createShapeId("path");
+				const path: PathShape = {
+					id,
+					type: "path",
+					x: 0,
+					y: 0,
+					points: [{ x, y, moveTo: true }],
+					stroke: SHAPE_DEFAULTS.path.stroke,
+					strokeWidth: SHAPE_DEFAULTS.path.strokeWidth,
+				};
+				setShapes((prev) => [...prev, path]);
+				setPencilDraftId(id);
+				createdShapeIdRef.current = id;
+				extendingPathRef.current = null;
+			}
+			return;
+		}
+
 		setIsPointerDown(true);
 		if (!selectedIds.includes(shape.id)) {
 			setSelectedIds([shape.id]);
 		}
 		setSelectedId(shape.id);
-		const { x, y } = svgPoint(e);
 		interactionOriginalRef.current = JSON.parse(
 			JSON.stringify(shape),
 		) as CanvasShape;

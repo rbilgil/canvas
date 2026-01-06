@@ -53,9 +53,16 @@ export type ImageShape = BaseShape & {
 	href: string;
 };
 
+export type PathPoint = {
+	x: number;
+	y: number;
+	/** If true, this starts a new sub-path (move to) instead of continuing (line to) */
+	moveTo?: boolean;
+};
+
 export type PathShape = BaseShape & {
 	type: "path";
-	points: Array<{ x: number; y: number }>;
+	points: Array<PathPoint>;
 };
 
 export type CanvasShape =

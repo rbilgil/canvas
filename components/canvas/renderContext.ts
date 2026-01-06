@@ -47,7 +47,12 @@ function getShapeBounds(s: CanvasShape): {
 		const minY = Math.min(...ys);
 		const maxX = Math.max(...xs);
 		const maxY = Math.max(...ys);
-		return { x: minX, y: minY, width: maxX - minX || 1, height: maxY - minY || 1 };
+		return {
+			x: minX,
+			y: minY,
+			width: maxX - minX || 1,
+			height: maxY - minY || 1,
+		};
 	}
 	return { x: 0, y: 0, width: 0, height: 0 };
 }
@@ -171,14 +176,28 @@ async function renderShapeToCanvas(
 			img.src = `data:image/svg+xml;utf8,${encodeURIComponent(shape.svg)}`;
 		});
 	} else if (shape.type === "path") {
-		if (shape.points.length >= 2) {
+		const strokeWidth = shape.strokeWidth || 4;
+		if (shape.points.length === 1) {
+			// Single point - render as a dot
+			const pt = shape.points[0];
+			const dotRadius = strokeWidth / 2 + 2;
 			ctx.beginPath();
-			ctx.moveTo(shape.points[0].x - offsetX, shape.points[0].y - offsetY);
-			for (let i = 1; i < shape.points.length; i++) {
-				ctx.lineTo(shape.points[i].x - offsetX, shape.points[i].y - offsetY);
+			ctx.arc(pt.x - offsetX, pt.y - offsetY, dotRadius, 0, Math.PI * 2);
+			ctx.fillStyle = shape.stroke || "#0f172a";
+			ctx.fill();
+		} else if (shape.points.length >= 2) {
+			ctx.beginPath();
+			for (let i = 0; i < shape.points.length; i++) {
+				const pt = shape.points[i];
+				// Use moveTo for first point or if moveTo flag is set (discontinuous strokes)
+				if (i === 0 || pt.moveTo) {
+					ctx.moveTo(pt.x - offsetX, pt.y - offsetY);
+				} else {
+					ctx.lineTo(pt.x - offsetX, pt.y - offsetY);
+				}
 			}
 			ctx.strokeStyle = shape.stroke || "#0f172a";
-			ctx.lineWidth = shape.strokeWidth || 4;
+			ctx.lineWidth = strokeWidth;
 			ctx.lineCap = "round";
 			ctx.lineJoin = "round";
 			ctx.stroke();

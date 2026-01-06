@@ -198,9 +198,54 @@ export function ShapeView({
 	}
 	if (shape.type === "path") {
 		const s = shape as PathShape;
-		if (s.points.length < 2) return null;
+		if (s.points.length === 0) return null;
+		
+		const strokeWidth = s.strokeWidth || SIZES.strokeWidth;
+		
+		// Single point - render as a dot
+		if (s.points.length === 1) {
+			const pt = s.points[0];
+			const dotRadius = strokeWidth / 2 + 2;
+			return (
+				<g>
+					<circle
+						cx={pt.x}
+						cy={pt.y}
+						r={dotRadius + SIZES.selectionPadding}
+						fill="transparent"
+						onPointerDown={(e) => onPointerDown(e, s, "move")}
+						style={{ cursor: tool === "select" ? "move" : "crosshair" }}
+					/>
+					<circle
+						cx={pt.x}
+						cy={pt.y}
+						r={dotRadius}
+						fill={s.stroke || COLORS.stroke}
+						pointerEvents="none"
+					/>
+					{selected && (
+						<circle
+							cx={pt.x}
+							cy={pt.y}
+							r={dotRadius + 4}
+							fill="none"
+							stroke="#3b82f6"
+							strokeWidth={1.5}
+							strokeDasharray="3 2"
+							pointerEvents="none"
+						/>
+					)}
+				</g>
+			);
+		}
+		
+		// Build path with moveTo support for discontinuous strokes
 		const d = s.points
-			.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`)
+			.map((p, i) => {
+				// Use M (move to) for first point or if moveTo flag is set
+				const cmd = i === 0 || p.moveTo ? "M" : "L";
+				return `${cmd}${p.x},${p.y}`;
+			})
 			.join(" ");
 		// Compute bounding box for selection frame and hit area
 		const bounds = boundingBox(s.points);
@@ -221,7 +266,7 @@ export function ShapeView({
 					d={d}
 					fill="none"
 					stroke={s.stroke || COLORS.stroke}
-					strokeWidth={s.strokeWidth || SIZES.strokeWidth}
+					strokeWidth={strokeWidth}
 					strokeLinecap="round"
 					strokeLinejoin="round"
 					pointerEvents="none"
