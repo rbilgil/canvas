@@ -11,7 +11,7 @@ export async function runLassoEdit(
 			fn: (stack: Array<Array<AnyCommand>>) => Array<Array<AnyCommand>>,
 		) => void;
 		editCanvasImage: (args: {
-			dataUrl: string;
+			imageUrl: string;
 			prompt: string;
 		}) => Promise<{ storageUrl: string; mimeType: string }>;
 	},
@@ -45,7 +45,7 @@ export async function runLassoEdit(
 		[{ tool: "replaceShape", shape: before }],
 	]);
 	const res = await editCanvasImage({
-		dataUrl: img.href,
+		imageUrl: img.href,
 		prompt: `${prompt} (apply only inside lassoed region)`,
 	});
 	// Use storage URL instead of base64

@@ -665,6 +665,8 @@ function SingleDesignCanvas({
 								prompt,
 								width: cmd.width,
 								height: cmd.height,
+								// Pass canvas context as reference if available
+								referenceImageUrl: context?.canvasDataUrl,
 							});
 							const id = cmd.id || createShapeId("img");
 							const newShape: ImageShape = {
@@ -685,39 +687,71 @@ function SingleDesignCanvas({
 							);
 							if (!before) continue;
 							const res = await editCanvasImage({
-								dataUrl: before.href,
+								imageUrl: before.href,
 								prompt: cmd.prompt,
 							});
-							// Use the storage URL instead of base64
 							updateShapeOp(before.id, before, { href: res.storageUrl });
 						} else if (cmd.tool === "combineSelection") {
-							// Generate a new image from the canvas context and add to current canvas
-							if (!context?.canvasDataUrl || !context?.userPrompt) {
-								console.log("combineSelection: missing context or prompt");
+							// Generate a new image from selected elements (or full canvas if nothing selected)
+							if (!context?.userPrompt) {
+								console.log("combineSelection: missing prompt");
 								continue;
 							}
 
 							try {
-								// Use the canvas context as input and generate a new image
-								const prompt = [
-									context.userPrompt,
-									"Based on the provided canvas image, create a polished, high-quality result.",
-								].join(" ");
+								// Determine which shapes to render
+								const idsToRender =
+									selectedIds.length > 0
+										? selectedIds
+										: selectedId
+											? [selectedId]
+											: undefined; // undefined = full canvas
 
-								const result = await editCanvasImage({
-									dataUrl: context.canvasDataUrl,
-									prompt,
+								const renderContext = await renderCanvasContext({
+									shapes,
+									canvasWidth: design.width,
+									canvasHeight: design.height,
+									selectedIds: idsToRender,
 								});
 
-								// Add the generated image as a new shape on top of the current canvas
+								// Calculate bounds to position the result
+								let bounds = { x: 0, y: 0, width: design.width, height: design.height };
+								if (idsToRender && idsToRender.length > 0) {
+									const selectedShapes = shapes.filter((s) =>
+										idsToRender.includes(s.id),
+									);
+									if (selectedShapes.length > 0) {
+										const xs = selectedShapes.map((s) => s.x);
+										const ys = selectedShapes.map((s) => s.y);
+										const x2s = selectedShapes.map((s) =>
+											"width" in s ? s.x + s.width : s.x,
+										);
+										const y2s = selectedShapes.map((s) =>
+											"height" in s ? s.y + s.height : s.y,
+										);
+										bounds = {
+											x: Math.min(...xs),
+											y: Math.min(...ys),
+											width: Math.max(...x2s) - Math.min(...xs),
+											height: Math.max(...y2s) - Math.min(...ys),
+										};
+									}
+								}
+
+								const result = await generateCanvasImage({
+									prompt: context.userPrompt,
+									referenceImageUrl: renderContext.dataUrl,
+								});
+
+								// Add the generated image as a new shape, using actual result dimensions
 								const id = createShapeId("img");
 								const newShape: ImageShape = {
 									id,
 									type: "image",
-									x: 0,
-									y: 0,
-									width: design.width,
-									height: design.height,
+									x: bounds.x,
+									y: bounds.y,
+									width: result.width,
+									height: result.height,
 									href: result.storageUrl,
 								};
 								addShapeOp(newShape);
@@ -750,6 +784,16 @@ function SingleDesignCanvas({
 		if (!isActive) return;
 
 		const onKey = (e: KeyboardEvent) => {
+			// Ignore keyboard shortcuts when typing in an input field
+			const target = e.target as HTMLElement;
+			if (
+				target.tagName === "INPUT" ||
+				target.tagName === "TEXTAREA" ||
+				target.isContentEditable
+			) {
+				return;
+			}
+
 			const isUndo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z";
 			if (isUndo) {
 				e.preventDefault();

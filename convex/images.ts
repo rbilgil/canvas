@@ -144,6 +144,8 @@ export const generateCanvasImage = action({
 		prompt: v.string(),
 		width: v.optional(v.number()),
 		height: v.optional(v.number()),
+		// Optional reference image (canvas context) for image-to-image generation
+		referenceImageUrl: v.optional(v.string()),
 	},
 	returns: v.object({
 		storageUrl: v.string(),
@@ -156,14 +158,24 @@ export const generateCanvasImage = action({
 		const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 		if (!apiKey) throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY");
 
+		// Build message content - optionally include reference image
+		const content: Array<
+			| { type: "text"; text: string }
+			| { type: "file"; data: Uint8Array; mediaType: string }
+		> = [];
+
+		// Add reference image if provided
+		if (args.referenceImageUrl) {
+			const { mime, bytes } = await getImageBytes(args.referenceImageUrl);
+			content.push({ type: "file", data: bytes, mediaType: mime });
+		}
+
+		// Add text prompt
+		content.push({ type: "text", text: args.prompt });
+
 		const { files } = await generateText({
 			model: "google/gemini-2.5-flash-image-preview",
-			messages: [
-				{
-					role: "user",
-					content: [{ type: "text", text: args.prompt }],
-				},
-			],
+			messages: [{ role: "user", content }],
 			providerOptions: {
 				google: { responseModalities: ["IMAGE"] },
 			},
@@ -178,18 +190,74 @@ export const generateCanvasImage = action({
 		const storageUrl = await ctx.storage.getUrl(storageId);
 		if (!storageUrl) throw new Error("Failed to get storage URL");
 
-		// We don't know exact dimensions here; default to inputs if provided or 512
-		const width = args.width ?? 512;
-		const height = args.height ?? 512;
+		// Extract actual dimensions from the image
+		const dimensions = getImageDimensions(imageBytes, imageFile.mediaType);
 		return {
 			storageUrl,
 			storageId,
 			mimeType: imageFile.mediaType,
-			width,
-			height,
+			width: dimensions.width,
+			height: dimensions.height,
 		};
 	},
 });
+
+// Extract image dimensions from buffer by parsing image headers
+function getImageDimensions(
+	buffer: Buffer,
+	mimeType: string,
+): { width: number; height: number } {
+	try {
+		if (mimeType === "image/png") {
+			// PNG: width at bytes 16-19, height at bytes 20-23 (big-endian)
+			if (buffer.length >= 24 && buffer.toString("hex", 0, 8) === "89504e470d0a1a0a") {
+				const width = buffer.readUInt32BE(16);
+				const height = buffer.readUInt32BE(20);
+				return { width, height };
+			}
+		} else if (mimeType === "image/jpeg" || mimeType === "image/jpg") {
+			// JPEG: scan for SOF0/SOF2 marker (0xFFC0 or 0xFFC2)
+			let offset = 2; // Skip SOI marker
+			while (offset < buffer.length - 8) {
+				if (buffer[offset] !== 0xff) {
+					offset++;
+					continue;
+				}
+				const marker = buffer[offset + 1];
+				// SOF0, SOF1, SOF2 markers contain dimensions
+				if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+					const height = buffer.readUInt16BE(offset + 5);
+					const width = buffer.readUInt16BE(offset + 7);
+					return { width, height };
+				}
+				// Skip to next marker
+				const segmentLength = buffer.readUInt16BE(offset + 2);
+				offset += 2 + segmentLength;
+			}
+		} else if (mimeType === "image/webp") {
+			// WebP: Check for VP8/VP8L/VP8X chunks
+			if (buffer.length >= 30 && buffer.toString("ascii", 0, 4) === "RIFF") {
+				const format = buffer.toString("ascii", 12, 16);
+				if (format === "VP8 ") {
+					// Lossy WebP
+					const width = buffer.readUInt16LE(26) & 0x3fff;
+					const height = buffer.readUInt16LE(28) & 0x3fff;
+					return { width, height };
+				} else if (format === "VP8L") {
+					// Lossless WebP
+					const bits = buffer.readUInt32LE(21);
+					const width = (bits & 0x3fff) + 1;
+					const height = ((bits >> 14) & 0x3fff) + 1;
+					return { width, height };
+				}
+			}
+		}
+	} catch (e) {
+		console.warn("Failed to parse image dimensions:", e);
+	}
+	// Fallback to default dimensions
+	return { width: 512, height: 512 };
+}
 
 function parseDataUrl(dataUrl: string): { mime: string; bytes: Uint8Array } {
 	const match = dataUrl.match(/^data:(.*?);base64,(.*)$/);
@@ -200,9 +268,27 @@ function parseDataUrl(dataUrl: string): { mime: string; bytes: Uint8Array } {
 	return { mime, bytes: new Uint8Array(buf) };
 }
 
+async function getImageBytes(
+	imageUrl: string,
+): Promise<{ mime: string; bytes: Uint8Array }> {
+	// Handle data URLs
+	if (imageUrl.startsWith("data:")) {
+		return parseDataUrl(imageUrl);
+	}
+
+	// Handle regular URLs - fetch the image
+	const response = await fetch(imageUrl);
+	if (!response.ok) {
+		throw new Error(`Failed to fetch image: ${response.status}`);
+	}
+	const arrayBuffer = await response.arrayBuffer();
+	const mime = response.headers.get("content-type") || "image/png";
+	return { mime, bytes: new Uint8Array(arrayBuffer) };
+}
+
 export const editCanvasImage = action({
 	args: {
-		dataUrl: v.string(),
+		imageUrl: v.string(),
 		prompt: v.string(),
 	},
 	returns: v.object({
@@ -214,7 +300,7 @@ export const editCanvasImage = action({
 		const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 		if (!apiKey) throw new Error("Missing GOOGLE_GENERATIVE_AI_API_KEY");
 
-		const { mime, bytes } = parseDataUrl(args.dataUrl);
+		const { mime, bytes } = await getImageBytes(args.imageUrl);
 		const messages: ModelMessage[] = [
 			{
 				role: "user",
