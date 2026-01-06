@@ -1,4 +1,5 @@
 import type React from "react";
+import { COLORS, SIZES, boundingBox, expandRect } from "./lib";
 import type {
 	CanvasShape,
 	EllipseShape,
@@ -202,21 +203,16 @@ export function ShapeView({
 			.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`)
 			.join(" ");
 		// Compute bounding box for selection frame and hit area
-		const xs = s.points.map((p) => p.x);
-		const ys = s.points.map((p) => p.y);
-		const minX = Math.min(...xs);
-		const minY = Math.min(...ys);
-		const maxX = Math.max(...xs);
-		const maxY = Math.max(...ys);
-		const padding = 4; // Extra padding for easier selection
+		const bounds = boundingBox(s.points);
+		const hitArea = expandRect(bounds, SIZES.selectionPadding);
 		return (
 			<g>
 				{/* Invisible hit area covering bounding box */}
 				<rect
-					x={minX - padding}
-					y={minY - padding}
-					width={maxX - minX + padding * 2}
-					height={maxY - minY + padding * 2}
+					x={hitArea.x}
+					y={hitArea.y}
+					width={hitArea.width}
+					height={hitArea.height}
 					fill="transparent"
 					onPointerDown={(e) => onPointerDown(e, s, "move")}
 					style={{ cursor: tool === "select" ? "move" : "crosshair" }}
@@ -224,8 +220,8 @@ export function ShapeView({
 				<path
 					d={d}
 					fill="none"
-					stroke={s.stroke || "#0f172a"}
-					strokeWidth={s.strokeWidth || 4}
+					stroke={s.stroke || COLORS.stroke}
+					strokeWidth={s.strokeWidth || SIZES.strokeWidth}
 					strokeLinecap="round"
 					strokeLinejoin="round"
 					pointerEvents="none"
@@ -233,7 +229,7 @@ export function ShapeView({
 				{selected && (
 					<SelectionFramePath
 						shape={s}
-						bounds={{ x: minX, y: minY, width: maxX - minX, height: maxY - minY }}
+						bounds={bounds}
 						onPointerDown={onPointerDown}
 					/>
 				)}
@@ -258,6 +254,7 @@ export function SelectionFrameRect({
 	const y = s.y;
 	const w = Math.max(0, (s as RectShape).width ?? 0);
 	const h = Math.max(0, (s as RectShape).height ?? 0);
+	const halfHandle = SIZES.handleSize / 2;
 	return (
 		<g>
 			<rect
@@ -266,7 +263,7 @@ export function SelectionFrameRect({
 				width={w}
 				height={h}
 				fill="none"
-				stroke="#2563eb"
+				stroke={COLORS.selection}
 				strokeWidth={1}
 				strokeDasharray="4 2"
 			/>
@@ -278,13 +275,13 @@ export function SelectionFrameRect({
 			].map((hnd) => (
 				<rect
 					key={hnd.key}
-					x={hnd.cx - 4}
-					y={hnd.cy - 4}
-					width={8}
-					height={8}
+					x={hnd.cx - halfHandle}
+					y={hnd.cy - halfHandle}
+					width={SIZES.handleSize}
+					height={SIZES.handleSize}
 					fill="#fff"
-					stroke="#2563eb"
-					strokeWidth={1.5}
+					stroke={COLORS.selection}
+					strokeWidth={SIZES.handleStrokeWidth}
 					style={{
 						cursor: `${hnd.key}-resize` as React.CSSProperties["cursor"],
 					}}
@@ -313,6 +310,7 @@ export function SelectionFramePath({
 	) => void;
 }) {
 	const { x, y, width: w, height: h } = bounds;
+	const halfHandle = SIZES.handleSize / 2;
 	return (
 		<g>
 			<rect
@@ -321,7 +319,7 @@ export function SelectionFramePath({
 				width={w}
 				height={h}
 				fill="none"
-				stroke="#2563eb"
+				stroke={COLORS.selection}
 				strokeWidth={1}
 				strokeDasharray="4 2"
 			/>
@@ -333,13 +331,13 @@ export function SelectionFramePath({
 			].map((hnd) => (
 				<rect
 					key={hnd.key}
-					x={hnd.cx - 4}
-					y={hnd.cy - 4}
-					width={8}
-					height={8}
+					x={hnd.cx - halfHandle}
+					y={hnd.cy - halfHandle}
+					width={SIZES.handleSize}
+					height={SIZES.handleSize}
 					fill="#fff"
-					stroke="#2563eb"
-					strokeWidth={1.5}
+					stroke={COLORS.selection}
+					strokeWidth={SIZES.handleStrokeWidth}
 					style={{
 						cursor: `${hnd.key}-resize` as React.CSSProperties["cursor"],
 					}}

@@ -13,6 +13,19 @@ import {
 import { createPortal } from "react-dom";
 import { runLassoEdit as externalRunLassoEdit } from "@/components/canvas/imageLasso";
 import {
+	COLORS,
+	SHAPE_DEFAULTS,
+	SIZES,
+	getShapeBounds,
+	rectsIntersect,
+	normalizeRect,
+	centroid,
+	moveShape,
+	resizeRectShape,
+	resizePathShape,
+	type Corner,
+} from "@/components/canvas/lib";
+import {
 	applyOperations,
 	type CanvasOperation,
 	createAddShapeOp,
@@ -110,53 +123,6 @@ export interface DesignCanvasRef {
 	canUndo: () => boolean;
 }
 
-function getShapeBounds(s: CanvasShape): {
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-} {
-	if (
-		s.type === "rect" ||
-		s.type === "ellipse" ||
-		s.type === "image" ||
-		s.type === "svg"
-	) {
-		const t = s as Extract<CanvasShape, { width: number; height: number }>;
-		return { x: t.x, y: t.y, width: t.width, height: t.height };
-	}
-	if (s.type === "line") {
-		const x1 = Math.min(s.x, s.x2);
-		const y1 = Math.min(s.y, s.y2);
-		return {
-			x: x1,
-			y: y1,
-			width: Math.abs(s.x2 - s.x),
-			height: Math.abs(s.y2 - s.y),
-		};
-	}
-	if (s.type === "text") {
-		const w = Math.max(40, (s.text.length || 1) * (s.fontSize * 0.6));
-		const h = s.fontSize * 1.4;
-		return { x: s.x, y: s.y, width: w, height: h };
-	}
-	if (s.type === "path") {
-		if (s.points.length === 0) return { x: 0, y: 0, width: 0, height: 0 };
-		const xs = s.points.map((p) => p.x);
-		const ys = s.points.map((p) => p.y);
-		const minX = Math.min(...xs);
-		const minY = Math.min(...ys);
-		const maxX = Math.max(...xs);
-		const maxY = Math.max(...ys);
-		return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-	}
-	return {
-		x: (s as { x?: number }).x ?? 0,
-		y: (s as { y?: number }).y ?? 0,
-		width: 0,
-		height: 0,
-	};
-}
 
 // Generate a unique client ID for this session
 function generateClientId(): string {
@@ -811,18 +777,6 @@ function SingleDesignCanvas({
 		return null;
 	}, [shapes, selectedIds]);
 
-	function rectsIntersect(
-		a: { x: number; y: number; width: number; height: number },
-		b: { x: number; y: number; width: number; height: number },
-	): boolean {
-		return (
-			a.x <= b.x + b.width &&
-			a.x + a.width >= b.x &&
-			a.y <= b.y + b.height &&
-			a.y + a.height >= b.y
-		);
-	}
-
 	// Local shape manipulation (for immediate UI feedback during gestures)
 	const setShapeById = useCallback(
 		(id: string, updater: (s: CanvasShape) => CanvasShape) => {
@@ -918,8 +872,8 @@ function SingleDesignCanvas({
 				x: 0,
 				y: 0,
 				points: [{ x, y }],
-				stroke: "#0f172a",
-				strokeWidth: 4,
+				stroke: SHAPE_DEFAULTS.path.stroke,
+				strokeWidth: SHAPE_DEFAULTS.path.strokeWidth,
 			};
 			setShapes((prev) => [...prev, path]);
 			setPencilDraftId(id);
@@ -980,7 +934,7 @@ function SingleDesignCanvas({
 				if (s.type !== "path") return s;
 				const lastPt = s.points[s.points.length - 1];
 				// Only add point if moved enough (reduces point count)
-				if (lastPt && Math.hypot(x - lastPt.x, y - lastPt.y) < 2) return s;
+				if (lastPt && Math.hypot(x - lastPt.x, y - lastPt.y) < SIZES.minPointDistance) return s;
 				return { ...s, points: [...s.points, { x, y }] };
 			});
 			return;
@@ -993,35 +947,9 @@ function SingleDesignCanvas({
 			setShapes((prev) =>
 				prev.map((s) => {
 					if (!selectedIds.includes(s.id)) return s;
-					const o = originals[s.id];
-					if (!o) return s;
-					if (o.type === "line") {
-						return {
-							...s,
-							x: o.x + dx,
-							y: o.y + dy,
-							x2: (o as { x2: number }).x2 + dx,
-							y2: (o as { y2: number }).y2 + dy,
-						};
-					}
-					if (o.type === "path") {
-						const origPath = o as PathShape;
-						return {
-							...s,
-							points: origPath.points.map((p) => ({
-								x: p.x + dx,
-								y: p.y + dy,
-							})),
-						};
-					}
-					if ("x" in o && "y" in o) {
-						return {
-							...(s as CanvasShape),
-							x: (o as { x: number }).x + dx,
-							y: (o as { y: number }).y + dy,
-						} as CanvasShape;
-					}
-					return s;
+					const original = originals[s.id];
+					if (!original) return s;
+					return moveShape(original, dx, dy);
 				}),
 			);
 			return;
@@ -1047,156 +975,30 @@ function SingleDesignCanvas({
 		}
 
 		if (tool === "select" && selectedId && activeHandle) {
-			const shiftKey = e.shiftKey;
+			const preserveAspectRatio = !e.shiftKey;
 			setShapeById(selectedId, (s) => {
-				if (
-					s.type === "rect" ||
-					s.type === "ellipse" ||
-					s.type === "image" ||
-					s.type === "svg"
-				) {
+				if (activeHandle.kind === "corner") {
+					const corner = activeHandle.corner as Corner;
 					const orig = interactionOriginalRef.current;
-					const origWidth = orig && "width" in orig ? orig.width : s.width;
-					const origHeight = orig && "height" in orig ? orig.height : s.height;
-					const origX = orig ? orig.x : s.x;
-					const origY = orig ? orig.y : s.y;
-					const aspectRatio = origWidth / (origHeight || 1);
 
-					let x1 = origX;
-					let y1 = origY;
-					let x2 = origX + origWidth;
-					let y2 = origY + origHeight;
-
-					if (activeHandle.kind === "corner") {
-						if (activeHandle.corner === "nw") {
-							x1 = x;
-							y1 = y;
-						} else if (activeHandle.corner === "ne") {
-							x2 = x;
-							y1 = y;
-						} else if (activeHandle.corner === "sw") {
-							x1 = x;
-							y2 = y;
-						} else if (activeHandle.corner === "se") {
-							x2 = x;
-							y2 = y;
-						}
-
-						// Preserve aspect ratio unless Shift is pressed
-						if (!shiftKey) {
-							const newWidth = Math.abs(x2 - x1);
-							const newHeight = Math.abs(y2 - y1);
-							const widthFromHeight = newHeight * aspectRatio;
-							const heightFromWidth = newWidth / aspectRatio;
-
-							// Use the larger dimension to determine size
-							if (widthFromHeight > newWidth) {
-								// Height is the constraining dimension
-								const adjustedWidth = widthFromHeight;
-								if (activeHandle.corner === "nw" || activeHandle.corner === "sw") {
-									x1 = x2 - (x1 < x2 ? adjustedWidth : -adjustedWidth);
-								} else {
-									x2 = x1 + (x2 > x1 ? adjustedWidth : -adjustedWidth);
-								}
-							} else {
-								// Width is the constraining dimension
-								const adjustedHeight = heightFromWidth;
-								if (activeHandle.corner === "nw" || activeHandle.corner === "ne") {
-									y1 = y2 - (y1 < y2 ? adjustedHeight : -adjustedHeight);
-								} else {
-									y2 = y1 + (y2 > y1 ? adjustedHeight : -adjustedHeight);
-								}
-							}
-						}
+					if (s.type === "rect" || s.type === "ellipse" || s.type === "image" || s.type === "svg") {
+						const origBounds = orig && "width" in orig
+							? { x: orig.x, y: orig.y, width: orig.width, height: orig.height }
+							: { x: s.x, y: s.y, width: s.width, height: s.height };
+						return resizeRectShape(s, origBounds, corner, x, y, preserveAspectRatio);
 					}
 
-					const newX = Math.min(x1, x2);
-					const newY = Math.min(y1, y2);
-					return {
-						...s,
-						x: newX,
-						y: newY,
-						width: Math.abs(x2 - x1),
-						height: Math.abs(y2 - y1),
-					};
+					if (s.type === "path") {
+						if (!orig || orig.type !== "path" || orig.points.length === 0) return s;
+						return resizePathShape(s, orig.points, corner, x, y, preserveAspectRatio);
+					}
 				}
-				if (s.type === "path" && activeHandle.kind === "corner") {
-					// Get original bounding box from interactionOriginalRef
-					const orig = interactionOriginalRef.current;
-					if (!orig || orig.type !== "path") return s;
-					const origPoints = orig.points;
-					if (origPoints.length === 0) return s;
 
-					const oxs = origPoints.map((p) => p.x);
-					const oys = origPoints.map((p) => p.y);
-					const oldMinX = Math.min(...oxs);
-					const oldMinY = Math.min(...oys);
-					const oldMaxX = Math.max(...oxs);
-					const oldMaxY = Math.max(...oys);
-					const oldWidth = oldMaxX - oldMinX || 1;
-					const oldHeight = oldMaxY - oldMinY || 1;
-					const aspectRatio = oldWidth / oldHeight;
-
-					// Calculate new bounding box based on corner being dragged
-					let x1 = oldMinX;
-					let y1 = oldMinY;
-					let x2 = oldMaxX;
-					let y2 = oldMaxY;
-					if (activeHandle.corner === "nw") {
-						x1 = x;
-						y1 = y;
-					} else if (activeHandle.corner === "ne") {
-						x2 = x;
-						y1 = y;
-					} else if (activeHandle.corner === "sw") {
-						x1 = x;
-						y2 = y;
-					} else if (activeHandle.corner === "se") {
-						x2 = x;
-						y2 = y;
-					}
-
-					// Preserve aspect ratio unless Shift is pressed
-					if (!shiftKey) {
-						const newWidth = Math.abs(x2 - x1);
-						const newHeight = Math.abs(y2 - y1);
-						const widthFromHeight = newHeight * aspectRatio;
-						const heightFromWidth = newWidth / aspectRatio;
-
-						if (widthFromHeight > newWidth) {
-							const adjustedWidth = widthFromHeight;
-							if (activeHandle.corner === "nw" || activeHandle.corner === "sw") {
-								x1 = x2 - (x1 < x2 ? adjustedWidth : -adjustedWidth);
-							} else {
-								x2 = x1 + (x2 > x1 ? adjustedWidth : -adjustedWidth);
-							}
-						} else {
-							const adjustedHeight = heightFromWidth;
-							if (activeHandle.corner === "nw" || activeHandle.corner === "ne") {
-								y1 = y2 - (y1 < y2 ? adjustedHeight : -adjustedHeight);
-							} else {
-								y2 = y1 + (y2 > y1 ? adjustedHeight : -adjustedHeight);
-							}
-						}
-					}
-
-					const newMinX = Math.min(x1, x2);
-					const newMinY = Math.min(y1, y2);
-					const newWidth = Math.abs(x2 - x1) || 1;
-					const newHeight = Math.abs(y2 - y1) || 1;
-
-					// Scale all points from old bbox to new bbox
-					const newPoints = origPoints.map((p) => ({
-						x: newMinX + ((p.x - oldMinX) / oldWidth) * newWidth,
-						y: newMinY + ((p.y - oldMinY) / oldHeight) * newHeight,
-					}));
-
-					return { ...s, points: newPoints };
-				}
 				if (s.type === "line" && activeHandle.kind === "line-end") {
 					if (activeHandle.end === 1) return { ...s, x, y };
 					return { ...s, x2: x, y2: y };
 				}
+
 				return s;
 			});
 		}
@@ -1237,12 +1039,7 @@ function SingleDesignCanvas({
 		}
 
 		if (marquee) {
-			const norm = {
-				x: Math.min(marquee.x, marquee.x + marquee.width),
-				y: Math.min(marquee.y, marquee.y + marquee.height),
-				width: Math.abs(marquee.width),
-				height: Math.abs(marquee.height),
-			};
+			const norm = normalizeRect(marquee);
 			const ids = shapes
 				.filter((s) => rectsIntersect(getShapeBounds(s), norm))
 				.map((s) => s.id);
@@ -1262,11 +1059,8 @@ function SingleDesignCanvas({
 						? "Describe edit for selected region…"
 						: "Describe what to do with this area…",
 				);
-				const cx =
-					lassoPoints.reduce((a, p) => a + p.x, 0) / lassoPoints.length;
-				const cy =
-					lassoPoints.reduce((a, p) => a + p.y, 0) / lassoPoints.length;
-				const pos = screenPointFromSvg(cx, cy);
+				const center = centroid(lassoPoints);
+				const pos = screenPointFromSvg(center.x, center.y);
 				setRcPos({ left: pos.left + 8, top: pos.top + 8 });
 				setRcOpen(true);
 			}
