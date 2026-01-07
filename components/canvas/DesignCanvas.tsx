@@ -14,11 +14,15 @@ import { createPortal } from "react-dom";
 import { runLassoEdit as externalRunLassoEdit } from "@/components/canvas/imageLasso";
 import {
 	applyZOrder,
+	buildCombineSelectionPrompt,
 	type Corner,
+	calculateShapesBounds,
 	centroid,
 	computeEditShapeUpdates,
 	computeEditTextUpdates,
+	createImageShapeFromResult,
 	getShapeBounds,
+	getShapesForIds,
 	isAsyncCommand,
 	isZOrderCommand,
 	moveShape,
@@ -26,6 +30,7 @@ import {
 	rectsIntersect,
 	resizePathShape,
 	resizeRectShape,
+	resolveSelectionIds,
 	SHAPE_DEFAULTS,
 	SIZES,
 	shapeFromCommand,
@@ -715,7 +720,6 @@ function SingleDesignCanvas({
 					for (const cmd of asyncCommands) {
 						if (cmd.tool === "generateImage") {
 							const prompt = cmd.prompt || "";
-							// Only pass canvas context as reference when something is selected
 							const hasSelection = selectedIds.length > 0 || !!selectedId;
 							const res = await generateCanvasImage({
 								prompt,
@@ -725,16 +729,11 @@ function SingleDesignCanvas({
 									? context?.canvasDataUrl
 									: undefined,
 							});
-							const id = cmd.id || createShapeId("img");
-							const newShape: ImageShape = {
-								id,
-								type: "image",
+							const newShape = createImageShapeFromResult(res, {
+								id: cmd.id || createShapeId("img"),
 								x: cmd.x ?? 40,
 								y: cmd.y ?? 40,
-								width: res.width,
-								height: res.height,
-								href: res.storageUrl, // Use storage URL instead of base64
-							};
+							});
 							addShapeOp(newShape);
 						} else if (cmd.tool === "editImage") {
 							const id = cmd.id || selectedId;
@@ -749,23 +748,20 @@ function SingleDesignCanvas({
 							});
 							updateShapeOp(before.id, before, { href: res.storageUrl });
 						} else if (cmd.tool === "combineSelection") {
-							// Generate a new image from selected elements (or full canvas if nothing selected)
 							if (!context?.userPrompt) {
 								console.log("combineSelection: missing prompt");
 								continue;
 							}
 
-							console.log("combineSelection", context?.userPrompt);
-
 							try {
 								// Determine which shapes to render
-								const idsToRender =
-									selectedIds.length > 0
-										? selectedIds
-										: selectedId
-											? [selectedId]
-											: undefined; // undefined = full canvas
+								const idsToRender = resolveSelectionIds(
+									selectedIds,
+									selectedId,
+								);
+								const shapesToCombine = getShapesForIds(shapes, idsToRender);
 
+								// Render the shapes to an image
 								const renderContext = await renderCanvasContext({
 									shapes,
 									canvasWidth: design.width,
@@ -774,60 +770,31 @@ function SingleDesignCanvas({
 								});
 
 								// Calculate bounds to position the result
-								let bounds = {
-									x: 0,
-									y: 0,
-									width: design.width,
-									height: design.height,
-								};
-								if (idsToRender && idsToRender.length > 0) {
-									const selectedShapes = shapes.filter((s) =>
-										idsToRender.includes(s.id),
-									);
-									if (selectedShapes.length > 0) {
-										const xs = selectedShapes.map((s) => s.x);
-										const ys = selectedShapes.map((s) => s.y);
-										const x2s = selectedShapes.map((s) =>
-											"width" in s ? s.x + s.width : s.x,
-										);
-										const y2s = selectedShapes.map((s) =>
-											"height" in s ? s.y + s.height : s.y,
-										);
-										bounds = {
-											x: Math.min(...xs),
-											y: Math.min(...ys),
-											width: Math.max(...x2s) - Math.min(...xs),
-											height: Math.max(...y2s) - Math.min(...ys),
-										};
-									}
-								}
+								const bounds =
+									shapesToCombine.length > 0
+										? calculateShapesBounds(shapesToCombine)
+										: {
+												x: 0,
+												y: 0,
+												width: design.width,
+												height: design.height,
+											};
 
-								// Build prompt with instructions to preserve composition while creating cohesive output
-								const combinePrompt = `Based on the reference image, create a new cohesive image that:
-- Preserves the general placement and positioning of elements from the reference
-- Maintains the overall composition and spatial arrangement
-- Transforms the separate elements into a unified, cohesive scene (not disjoint cutouts)
-- Follows this user instruction: ${context.userPrompt}
-
-Generate a polished, complete image that feels like a single unified artwork, not a collage.`;
-
+								// Generate the combined image
 								const result = await generateCanvasImage({
-									prompt: combinePrompt,
+									prompt: buildCombineSelectionPrompt(context.userPrompt),
 									referenceImageUrl: renderContext.dataUrl,
 								});
 
-								// Add the generated image as a new shape, using actual result dimensions
+								// Add the generated image as a new shape
 								const id = createShapeId("img");
-								const newShape: ImageShape = {
+								const newShape = createImageShapeFromResult(result, {
 									id,
-									type: "image",
 									x: bounds.x,
 									y: bounds.y,
-									width: result.width,
-									height: result.height,
-									href: result.storageUrl,
-								};
+								});
 								addShapeOp(newShape);
+
 								// Select the new image
 								setSelectedId(id);
 								setSelectedIds([id]);

@@ -6,8 +6,31 @@
 import type {
 	CanvasShape,
 	CanvasToolCommand,
+	ImageShape,
 	TextShape,
 } from "../types";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface Bounds {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+export interface CreateShapeOptions {
+	/** Function to generate unique shape IDs */
+	createId: (prefix: string) => string;
+}
+
+export interface ImageGenerationResult {
+	storageUrl: string;
+	width: number;
+	height: number;
+}
 
 // =============================================================================
 // Edit Shape Command Handlers
@@ -144,11 +167,6 @@ export function computeEditTextUpdates(
 // Shape Creation from Commands
 // =============================================================================
 
-export interface CreateShapeOptions {
-	/** Function to generate unique shape IDs */
-	createId: (prefix: string) => string;
-}
-
 /**
  * Create a new shape from a creation command.
  * Returns the shape to add, or null if the command is not a creation command.
@@ -236,7 +254,11 @@ export function shapeFromCommand(
 // Z-Order Operations
 // =============================================================================
 
-export type ZOrderCommand = "bringToFront" | "sendToBack" | "moveUp" | "moveDown";
+export type ZOrderCommand =
+	| "bringToFront"
+	| "sendToBack"
+	| "moveUp"
+	| "moveDown";
 
 /**
  * Apply a z-order command to an array of shapes.
@@ -314,3 +336,113 @@ export function isAsyncCommand(cmd: CanvasToolCommand): boolean {
 	);
 }
 
+// =============================================================================
+// Async Command Helpers
+// =============================================================================
+
+/**
+ * Calculate the bounding box of a set of shapes.
+ * Returns the smallest rectangle that contains all the shapes.
+ */
+export function calculateShapesBounds(shapes: CanvasShape[]): Bounds {
+	if (shapes.length === 0) {
+		return { x: 0, y: 0, width: 0, height: 0 };
+	}
+
+	const xs = shapes.map((s) => s.x);
+	const ys = shapes.map((s) => s.y);
+	const x2s = shapes.map((s) => ("width" in s ? s.x + s.width : s.x));
+	const y2s = shapes.map((s) => ("height" in s ? s.y + s.height : s.y));
+
+	const minX = Math.min(...xs);
+	const minY = Math.min(...ys);
+	const maxX = Math.max(...x2s);
+	const maxY = Math.max(...y2s);
+
+	return {
+		x: minX,
+		y: minY,
+		width: maxX - minX,
+		height: maxY - minY,
+	};
+}
+
+/**
+ * Resolve which shape IDs should be used for a selection-based operation.
+ * Returns undefined if the full canvas should be used.
+ */
+export function resolveSelectionIds(
+	selectedIds: string[],
+	selectedId: string | null,
+): string[] | undefined {
+	if (selectedIds.length > 0) return selectedIds;
+	if (selectedId) return [selectedId];
+	return undefined; // Full canvas
+}
+
+/**
+ * Get the shapes that match the given IDs, or all shapes if ids is undefined.
+ */
+export function getShapesForIds(
+	allShapes: CanvasShape[],
+	ids: string[] | undefined,
+): CanvasShape[] {
+	if (!ids) return allShapes;
+	return allShapes.filter((s) => ids.includes(s.id));
+}
+
+/**
+ * Build the prompt for the combineSelection command.
+ * This creates a detailed instruction for the AI to merge selected elements.
+ */
+export function buildCombineSelectionPrompt(userPrompt: string): string {
+	return `Based on the reference image, create a new cohesive image that:
+- Preserves the general placement and positioning of elements from the reference
+- Maintains the overall composition and spatial arrangement
+- Transforms the separate elements into a unified, cohesive scene (not disjoint cutouts)
+- Follows this user instruction: ${userPrompt}
+
+Generate a polished, complete image that feels like a single unified artwork, not a collage.`;
+}
+
+/**
+ * Create an ImageShape from a generation result.
+ */
+export function createImageShapeFromResult(
+	result: ImageGenerationResult,
+	options: {
+		id: string;
+		x: number;
+		y: number;
+	},
+): ImageShape {
+	return {
+		id: options.id,
+		type: "image",
+		x: options.x,
+		y: options.y,
+		width: result.width,
+		height: result.height,
+		href: result.storageUrl,
+	};
+}
+
+/**
+ * Prepare context for a generateImage command.
+ * Returns the position and reference image URL if applicable.
+ */
+export function prepareGenerateImageContext(
+	cmd: CanvasToolCommand & { tool: "generateImage" },
+	hasSelection: boolean,
+	canvasDataUrl?: string,
+): {
+	x: number;
+	y: number;
+	referenceImageUrl: string | undefined;
+} {
+	return {
+		x: cmd.x ?? 40,
+		y: cmd.y ?? 40,
+		referenceImageUrl: hasSelection ? canvasDataUrl : undefined,
+	};
+}
