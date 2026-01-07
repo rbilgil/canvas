@@ -3,15 +3,11 @@
 import {
 	ArrowDown,
 	ArrowUp,
-	Circle,
 	LassoSelect,
-	Minus,
 	MousePointer,
 	Pencil,
 	RotateCw,
-	Square,
 	Trash2,
-	Type as TypeIcon,
 	Undo2,
 } from "lucide-react";
 import { ToolbarButton } from "./ToolbarButton";
@@ -49,34 +45,6 @@ export function CanvasToolbar({
 				onClick={() => onToolChange("select")}
 			>
 				<MousePointer className="w-4 h-4" />
-			</ToolbarButton>
-			<ToolbarButton
-				title="Rectangle (R)"
-				active={tool === "draw-rect"}
-				onClick={() => onToolChange("draw-rect")}
-			>
-				<Square className="w-4 h-4" />
-			</ToolbarButton>
-			<ToolbarButton
-				title="Ellipse (O)"
-				active={tool === "draw-ellipse"}
-				onClick={() => onToolChange("draw-ellipse")}
-			>
-				<Circle className="w-4 h-4" />
-			</ToolbarButton>
-			<ToolbarButton
-				title="Line (L)"
-				active={tool === "draw-line"}
-				onClick={() => onToolChange("draw-line")}
-			>
-				<Minus className="w-4 h-4" />
-			</ToolbarButton>
-			<ToolbarButton
-				title="Text (T)"
-				active={tool === "draw-text"}
-				onClick={() => onToolChange("draw-text")}
-			>
-				<TypeIcon className="w-4 h-4" />
 			</ToolbarButton>
 			<ToolbarButton
 				title="Pencil (P)"

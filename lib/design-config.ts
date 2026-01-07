@@ -35,12 +35,22 @@ export const LineShapeSchema = BaseShapeSchema.extend({
 	y2: z.number(),
 });
 
+export const TextShadowSchema = z.object({
+	color: z.string(),
+	blur: z.number(),
+	offsetX: z.number(),
+	offsetY: z.number(),
+});
+
 export const TextShapeSchema = BaseShapeSchema.extend({
 	type: z.literal("text"),
 	text: z.string(),
 	fontSize: z.number(),
 	fontFamily: z.string().optional(),
 	fontWeight: z.string().optional(),
+	// Text-specific stroke (outline effect, uses inherited stroke/strokeWidth from base)
+	// Shadow effect for text
+	shadow: TextShadowSchema.optional(),
 });
 
 export const SvgShapeSchema = BaseShapeSchema.extend({
@@ -83,6 +93,8 @@ export const DesignConfigSchema = z.object({
 });
 
 export type DesignConfig = z.infer<typeof DesignConfigSchema>;
+export type TextShadow = z.infer<typeof TextShadowSchema>;
+export type TextShape = z.infer<typeof TextShapeSchema>;
 
 // Parse and validate a design config, returning a default if invalid
 export function parseDesignConfig(config: unknown): DesignConfig {

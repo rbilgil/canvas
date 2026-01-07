@@ -43,7 +43,18 @@ export type CanvasToolCommand = {
 		| "generateSvg"
 		| "generateImage"
 		| "editImage"
-		| "combineSelection";
+		| "editText"
+		| "combineSelection"
+		// Shape creation tools
+		| "createRect"
+		| "createEllipse"
+		| "createLine"
+		| "createText"
+		// Z-order tools
+		| "bringToFront"
+		| "sendToBack"
+		| "moveUp"
+		| "moveDown";
 	id?: string;
 	target?: string;
 	dx?: number;
@@ -53,11 +64,29 @@ export type CanvasToolCommand = {
 	scale?: number;
 	fill?: string;
 	stroke?: string;
+	strokeWidth?: number;
 	svg?: string;
 	x?: number;
 	y?: number;
+	x1?: number;
+	y1?: number;
+	x2?: number;
+	y2?: number;
 	prompt?: string;
 	dataUrl?: string;
+	// Text-specific properties
+	text?: string;
+	fontSize?: number;
+	fontWeight?: string;
+	fontFamily?: string;
+	shadow?: {
+		color: string;
+		blur: number;
+		offsetX: number;
+		offsetY: number;
+	};
+	// Rect-specific
+	radius?: number;
 };
 
 export type LocalUndoCommand =

@@ -93,6 +93,14 @@ export function createText(args: {
 	fontFamily?: string;
 	fontWeight?: string;
 	fill?: string;
+	stroke?: string;
+	strokeWidth?: number;
+	shadow?: {
+		color: string;
+		blur: number;
+		offsetX: number;
+		offsetY: number;
+	};
 	opacity?: number;
 }): TextShape {
 	return {
@@ -105,6 +113,9 @@ export function createText(args: {
 		fontFamily: args.fontFamily,
 		fontWeight: args.fontWeight,
 		fill: args.fill ?? "#0f172a",
+		stroke: args.stroke,
+		strokeWidth: args.strokeWidth,
+		shadow: args.shadow,
 		opacity: args.opacity,
 	};
 }

@@ -98,6 +98,62 @@ const designOpsApi = (api as any).designOperations as {
 	}) => RemoteOperation[];
 };
 
+// Context-aware placeholder examples for the right-click prompt
+const PLACEHOLDER_EXAMPLES = {
+	// No selection - general canvas operations
+	none: [
+		"add a red circle",
+		"create text saying Hello",
+		"generate image of a sunset",
+		"draw a rectangle here",
+		"add a blue square",
+		"create a line across",
+	],
+	// Shape selected (rect, ellipse, line, path)
+	shape: [
+		"paint it yellow",
+		"make it 20% bigger",
+		"move to the left",
+		"bring to front",
+		"change the color to blue",
+		"make it smaller",
+	],
+	// Text selected
+	text: [
+		"make the font bigger",
+		"add a shadow effect",
+		"change to bold",
+		"paint it red",
+		"increase font size",
+		"add text outline",
+	],
+	// Image selected
+	image: [
+		"make it brighter",
+		"remove the background",
+		"make it 20% smaller",
+		"move to center",
+		"bring to front",
+		"add a blur effect",
+	],
+	// Multiple shapes selected
+	multiple: [
+		"combine into one scene",
+		"align them horizontally",
+		"paint them all blue",
+		"move closer together",
+		"bring to front",
+		"make them all bigger",
+	],
+};
+
+function getRandomPlaceholder(
+	category: keyof typeof PLACEHOLDER_EXAMPLES,
+): string {
+	const examples = PLACEHOLDER_EXAMPLES[category];
+	return examples[Math.floor(Math.random() * examples.length)];
+}
+
 export interface DesignData {
 	id: string;
 	name: string;
@@ -247,8 +303,14 @@ function SingleDesignCanvas({
 	});
 	const [rcBusy, setRcBusy] = useState(false);
 	const [rcPlaceholder, setRcPlaceholder] = useState("paint it yellow");
+	// Smart suggestions state
+	const [rcSuggestions, setRcSuggestions] = useState<
+		Array<{ label: string; command: CanvasToolCommand }>
+	>([]);
+	const [rcSuggestionsLoading, setRcSuggestionsLoading] = useState(false);
 
 	const interpret = useAction(api.canvas_ai.interpret);
+	const suggestActions = useAction(api.canvas_ai.suggestActions);
 	const generateCanvasImage = useAction(api.images.generateCanvasImage);
 	const editCanvasImage = useAction(api.images.editCanvasImage);
 	const uploadImage = useAction(api.images.uploadImage);
@@ -656,6 +718,129 @@ function SingleDesignCanvas({
 							svg: cmd.svg,
 						};
 						addShapeOp(newShape);
+					} else if (cmd.tool === "createRect") {
+						// Handle rectangle creation from AI
+						const newShape: CanvasShape = {
+							id: createShapeId("rect"),
+							type: "rect",
+							x: cmd.x ?? 100,
+							y: cmd.y ?? 100,
+							width: cmd.width ?? 100,
+							height: cmd.height ?? 100,
+							fill: cmd.fill ?? "transparent",
+							stroke: cmd.stroke ?? "#0f172a",
+							strokeWidth: cmd.strokeWidth ?? 2,
+							radius: cmd.radius,
+						};
+						addShapeOp(newShape);
+					} else if (cmd.tool === "createEllipse") {
+						// Handle ellipse creation from AI
+						const newShape: CanvasShape = {
+							id: createShapeId("ellipse"),
+							type: "ellipse",
+							x: cmd.x ?? 100,
+							y: cmd.y ?? 100,
+							width: cmd.width ?? 100,
+							height: cmd.height ?? 100,
+							fill: cmd.fill ?? "transparent",
+							stroke: cmd.stroke ?? "#0f172a",
+							strokeWidth: cmd.strokeWidth ?? 2,
+						};
+						addShapeOp(newShape);
+					} else if (cmd.tool === "createLine") {
+						// Handle line creation from AI
+						const newShape: CanvasShape = {
+							id: createShapeId("line"),
+							type: "line",
+							x: cmd.x1 ?? 100,
+							y: cmd.y1 ?? 100,
+							x2: cmd.x2 ?? 200,
+							y2: cmd.y2 ?? 200,
+							stroke: cmd.stroke ?? "#0f172a",
+							strokeWidth: cmd.strokeWidth ?? 2,
+						};
+						addShapeOp(newShape);
+					} else if (cmd.tool === "createText") {
+						// Handle text creation from AI
+						const newShape: CanvasShape = {
+							id: createShapeId("text"),
+							type: "text",
+							x: cmd.x ?? 100,
+							y: cmd.y ?? 100,
+							text: cmd.text ?? "Text",
+							fontSize: cmd.fontSize ?? 20,
+							fontWeight: cmd.fontWeight ?? "400",
+							fontFamily: cmd.fontFamily ?? "ui-sans-serif, system-ui",
+							fill: cmd.fill ?? "#0f172a",
+							stroke: cmd.stroke,
+							strokeWidth: cmd.strokeWidth,
+							shadow: cmd.shadow,
+						};
+						addShapeOp(newShape);
+					} else if (
+						cmd.tool === "bringToFront" ||
+						cmd.tool === "sendToBack" ||
+						cmd.tool === "moveUp" ||
+						cmd.tool === "moveDown"
+					) {
+						// Handle z-order commands from AI
+						const targetId = cmd.id || selectedId;
+						if (!targetId) continue;
+						const shapeIndex = shapes.findIndex((s) => s.id === targetId);
+						if (shapeIndex === -1) continue;
+
+						setShapes((prev) => {
+							const newShapes = [...prev];
+							const idx = newShapes.findIndex((s) => s.id === targetId);
+							if (idx === -1) return prev;
+
+							if (cmd.tool === "bringToFront") {
+								// Move to end of array (top of stack)
+								const [shape] = newShapes.splice(idx, 1);
+								newShapes.push(shape);
+							} else if (cmd.tool === "sendToBack") {
+								// Move to start of array (bottom of stack)
+								const [shape] = newShapes.splice(idx, 1);
+								newShapes.unshift(shape);
+							} else if (cmd.tool === "moveUp" && idx < newShapes.length - 1) {
+								// Swap with next shape
+								[newShapes[idx], newShapes[idx + 1]] = [
+									newShapes[idx + 1],
+									newShapes[idx],
+								];
+							} else if (cmd.tool === "moveDown" && idx > 0) {
+								// Swap with previous shape
+								[newShapes[idx], newShapes[idx - 1]] = [
+									newShapes[idx - 1],
+									newShapes[idx],
+								];
+							}
+
+							// Persist z-order to backend
+							void updateDesignConfig({
+								designId: design.id as Id<"designs">,
+								config: { shapes: newShapes },
+							});
+							return newShapes;
+						});
+					} else if (cmd.tool === "editText") {
+						// Handle text editing from AI
+						const targetId = cmd.id || selectedId;
+						if (!targetId) continue;
+						const shape = shapes.find((s) => s.id === targetId);
+						if (!shape || shape.type !== "text") continue;
+						const updates: Partial<CanvasShape> = {};
+						if (cmd.text !== undefined) updates.text = cmd.text;
+						if (cmd.fontSize !== undefined) updates.fontSize = cmd.fontSize;
+						if (cmd.fontWeight !== undefined) updates.fontWeight = cmd.fontWeight;
+						if (cmd.fontFamily !== undefined) updates.fontFamily = cmd.fontFamily;
+						if (cmd.shadow !== undefined) updates.shadow = cmd.shadow;
+						if (cmd.fill !== undefined) updates.fill = cmd.fill;
+						if (cmd.stroke !== undefined) updates.stroke = cmd.stroke;
+						if (cmd.strokeWidth !== undefined) updates.strokeWidth = cmd.strokeWidth;
+						if (Object.keys(updates).length > 0) {
+							updateShapeOp(targetId, shape, updates);
+						}
 					}
 				}
 			}
@@ -798,11 +983,14 @@ Generate a polished, complete image that feels like a single unified artwork, no
 			shapes,
 			design.width,
 			design.height,
+			design.id,
 			generateCanvasImage,
 			editCanvasImage,
 			addShapeOp,
 			updateShapeOp,
 			deleteShapeOp,
+			updateDesignConfig,
+			setShapes,
 		],
 	);
 
@@ -1077,8 +1265,87 @@ Generate a polished, complete image that feels like a single unified artwork, no
 		setRcOpen(true);
 		setRcBusy(false);
 		setRcText("");
-		setRcPlaceholder("paint it yellow");
+		setRcSuggestions([]);
+		setRcSuggestionsLoading(true);
+
+		// Determine context-aware placeholder
+		let placeholderCategory: keyof typeof PLACEHOLDER_EXAMPLES = "none";
+		if (selectedIds.length > 1) {
+			placeholderCategory = "multiple";
+		} else if (selectedId || selectedIds.length === 1) {
+			const id = selectedId || selectedIds[0];
+			const shape = shapes.find((s) => s.id === id);
+			if (shape) {
+				if (shape.type === "text") {
+					placeholderCategory = "text";
+				} else if (shape.type === "image") {
+					placeholderCategory = "image";
+				} else {
+					placeholderCategory = "shape";
+				}
+			}
+		}
+		setRcPlaceholder(getRandomPlaceholder(placeholderCategory));
 		setRcPos({ left: e.clientX, top: e.clientY });
+
+		// Fetch smart suggestions in background
+		void (async () => {
+			try {
+				// Render visual context for AI
+				const context = await renderCanvasContext({
+					shapes,
+					canvasWidth: design.width,
+					canvasHeight: design.height,
+					selectedIds:
+						selectedIds.length > 0
+							? selectedIds
+							: selectedId
+								? [selectedId]
+								: undefined,
+				});
+
+				// Build selected shapes info
+				const effectiveSelectedIds =
+					selectedIds.length > 0
+						? selectedIds
+						: selectedId
+							? [selectedId]
+							: [];
+				const selectedShapesInfo = effectiveSelectedIds
+					.map((id) => shapes.find((s) => s.id === id))
+					.filter((s): s is NonNullable<typeof s> => s != null)
+					.map((s) => ({
+						id: s.id,
+						type: s.type,
+						x: s.x,
+						y: s.y,
+						width: "width" in s ? s.width : undefined,
+						height: "height" in s ? s.height : undefined,
+						fill: s.fill,
+						stroke: s.stroke,
+						text: s.type === "text" ? s.text : undefined,
+					}));
+
+				const res = await suggestActions({
+					imageContext: context.dataUrl,
+					contextDescription: context.description,
+					selectedShapes:
+						selectedShapesInfo.length > 0 ? selectedShapesInfo : undefined,
+				});
+
+				setRcSuggestions(
+					res.suggestions.map((s) => ({
+						label: s.label,
+						command: s.command as CanvasToolCommand,
+					})),
+				);
+			} catch (error) {
+				console.error("Failed to fetch suggestions:", error);
+				setRcSuggestions([]);
+			} finally {
+				setRcSuggestionsLoading(false);
+			}
+		})();
 	};
 
 	const handlePointerMove = (e: React.PointerEvent) => {
@@ -1810,6 +2077,72 @@ Generate a polished, complete image that feels like a single unified artwork, no
 						className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md p-2 shadow-lg w-72"
 					>
 						<div className="text-xs opacity-70 mb-1">What should I do?</div>
+						{/* Smart suggestions */}
+						{(rcSuggestionsLoading || rcSuggestions.length > 0) && (
+							<div className="mb-2">
+								{rcSuggestionsLoading ? (
+									<div className="flex flex-wrap gap-1">
+										{[1, 2, 3, 4, 5].map((i) => (
+											<div
+												key={i}
+												className="h-6 bg-slate-100 dark:bg-slate-800 rounded animate-pulse"
+												style={{ width: `${60 + Math.random() * 40}px` }}
+											/>
+										))}
+									</div>
+								) : (
+									<div className="flex flex-wrap gap-1">
+										{rcSuggestions.map((suggestion, i) => (
+											<button
+												type="button"
+												key={i}
+												className="text-xs px-2 py-1 rounded bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors"
+												disabled={rcBusy}
+												onClick={() => {
+													if (rcBusy) return;
+													setRcBusy(true);
+													setIsProcessing(true);
+													void (async () => {
+														try {
+															const context = await renderCanvasContext({
+																shapes,
+																canvasWidth: design.width,
+																canvasHeight: design.height,
+																selectedIds:
+																	selectedIds.length > 0
+																		? selectedIds
+																		: selectedId
+																			? [selectedId]
+																			: undefined,
+															});
+															await applyCommandGroup(
+																[suggestion.command],
+																{ recordUndo: true },
+																{
+																	userPrompt: suggestion.label,
+																	canvasDataUrl: context.dataUrl,
+																},
+															);
+															setRcOpen(false);
+														} catch (error) {
+															console.error(
+																"Failed to apply suggestion:",
+																error,
+															);
+														} finally {
+															setRcBusy(false);
+															setIsProcessing(false);
+														}
+													})();
+												}}
+											>
+												{suggestion.label}
+											</button>
+										))}
+									</div>
+								)}
+							</div>
+						)}
 						<Input
 							placeholder={rcPlaceholder}
 							value={rcText}

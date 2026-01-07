@@ -108,8 +108,23 @@ export function ShapeView({
 	}
 	if (shape.type === "text") {
 		const s = shape as TextShape;
+		const filterId = s.shadow ? `text-shadow-${s.id}` : undefined;
 		return (
 			<g>
+				{/* Define shadow filter if shadow is present */}
+				{s.shadow && (
+					<defs>
+						<filter id={filterId} x="-50%" y="-50%" width="200%" height="200%">
+							<feDropShadow
+								dx={s.shadow.offsetX}
+								dy={s.shadow.offsetY}
+								stdDeviation={s.shadow.blur / 2}
+								floodColor={s.shadow.color}
+								floodOpacity="1"
+							/>
+						</filter>
+					</defs>
+				)}
 				<text
 					x={s.x}
 					y={s.y}
@@ -119,7 +134,9 @@ export function ShapeView({
 					fill={s.fill || "#0f172a"}
 					stroke={s.stroke}
 					strokeWidth={s.strokeWidth}
+					paintOrder={s.stroke ? "stroke fill" : undefined}
 					dominantBaseline="hanging"
+					filter={filterId ? `url(#${filterId})` : undefined}
 					onPointerDown={(e) => onPointerDown(e, s, "move")}
 					style={{ cursor: tool === "select" ? "text" : "crosshair" }}
 				>

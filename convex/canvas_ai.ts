@@ -103,6 +103,93 @@ const EditImageParams = z.object({
 
 const CombineSelectionParams = z.object({});
 
+// Shape creation parameter schemas
+const CreateRectParams = z.object({
+	x: z.number().describe("X position on canvas."),
+	y: z.number().describe("Y position on canvas."),
+	width: z.number().describe("Width of the rectangle."),
+	height: z.number().describe("Height of the rectangle."),
+	fill: hexColor.optional().describe("Fill color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor.optional().describe("Stroke color as HEX (#RRGGBB or #RGB)."),
+	strokeWidth: z.number().optional().describe("Stroke width in pixels."),
+	radius: z.number().optional().describe("Corner radius for rounded rectangles."),
+});
+
+const CreateEllipseParams = z.object({
+	x: z.number().describe("X position (center) on canvas."),
+	y: z.number().describe("Y position (center) on canvas."),
+	width: z.number().describe("Width of the ellipse."),
+	height: z.number().describe("Height of the ellipse."),
+	fill: hexColor.optional().describe("Fill color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor.optional().describe("Stroke color as HEX (#RRGGBB or #RGB)."),
+	strokeWidth: z.number().optional().describe("Stroke width in pixels."),
+});
+
+const CreateLineParams = z.object({
+	x1: z.number().describe("X position of start point."),
+	y1: z.number().describe("Y position of start point."),
+	x2: z.number().describe("X position of end point."),
+	y2: z.number().describe("Y position of end point."),
+	stroke: hexColor.optional().describe("Line color as HEX (#RRGGBB or #RGB)."),
+	strokeWidth: z.number().optional().describe("Line width in pixels."),
+});
+
+const TextShadowParams = z.object({
+	color: hexColor.describe("Shadow color as HEX."),
+	blur: z.number().describe("Shadow blur radius in pixels."),
+	offsetX: z.number().describe("Shadow horizontal offset in pixels."),
+	offsetY: z.number().describe("Shadow vertical offset in pixels."),
+});
+
+const CreateTextParams = z.object({
+	text: z.string().describe("The text content to display."),
+	x: z.number().describe("X position on canvas."),
+	y: z.number().describe("Y position on canvas."),
+	fontSize: z.number().optional().describe("Font size in pixels. Default is 20."),
+	fontWeight: z
+		.string()
+		.optional()
+		.describe(
+			"Font weight: '100' to '900', 'normal', or 'bold'. Default is '400'.",
+		),
+	fontFamily: z
+		.string()
+		.optional()
+		.describe("Font family name. Default is system UI font."),
+	fill: hexColor.optional().describe("Text color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor
+		.optional()
+		.describe("Text outline/stroke color as HEX (#RRGGBB or #RGB)."),
+	strokeWidth: z.number().optional().describe("Text outline width in pixels."),
+	shadow: TextShadowParams.optional().describe("Text shadow effect."),
+});
+
+// Edit text parameters - for modifying existing text elements
+const EditTextParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe("The text shape ID to edit. If omitted, applies to current selection."),
+	text: z.string().optional().describe("New text content."),
+	fontSize: z.number().optional().describe("New font size in pixels."),
+	fontWeight: z
+		.string()
+		.optional()
+		.describe("New font weight: '100' to '900', 'normal', or 'bold'."),
+	fontFamily: z.string().optional().describe("New font family name."),
+	shadow: TextShadowParams.optional().describe("Text shadow effect. Set to add/update shadow."),
+});
+
+// Z-order parameter schemas
+const ZOrderParams = z.object({
+	id: z
+		.string()
+		.optional()
+		.describe(
+			"The shape ID to reorder. If omitted, applies to current selection.",
+		),
+});
+
 // Define the tools
 const canvasTools = {
 	moveObject: tool({
@@ -134,14 +221,63 @@ const canvasTools = {
 		description: "Edit an existing image on the canvas using a text prompt.",
 		inputSchema: EditImageParams,
 	}),
+	editText: tool({
+		description:
+			"Edit an existing text element's properties: content, font size, font weight (bold/normal), font family, or shadow. Use this to modify selected text.",
+		inputSchema: EditTextParams,
+	}),
 	combineSelection: tool({
 		description:
 			"Merge all currently selected shapes into a single raster image.",
 		inputSchema: CombineSelectionParams,
 	}),
+	// Shape creation tools
+	createRect: tool({
+		description:
+			"Create a rectangle on the canvas. Specify position, dimensions, and optionally colors and corner radius.",
+		inputSchema: CreateRectParams,
+	}),
+	createEllipse: tool({
+		description:
+			"Create an ellipse or circle on the canvas. For a circle, use equal width and height.",
+		inputSchema: CreateEllipseParams,
+	}),
+	createLine: tool({
+		description: "Create a line between two points on the canvas.",
+		inputSchema: CreateLineParams,
+	}),
+	createText: tool({
+		description:
+			"Create text on the canvas with customizable styling including font size, weight, family, color, stroke outline, and shadow effects.",
+		inputSchema: CreateTextParams,
+	}),
+	// Z-order tools
+	bringToFront: tool({
+		description: "Bring shape(s) to the front (top of the layer stack).",
+		inputSchema: ZOrderParams,
+	}),
+	sendToBack: tool({
+		description: "Send shape(s) to the back (bottom of the layer stack).",
+		inputSchema: ZOrderParams,
+	}),
+	moveUp: tool({
+		description: "Move shape(s) one level up in the layer stack.",
+		inputSchema: ZOrderParams,
+	}),
+	moveDown: tool({
+		description: "Move shape(s) one level down in the layer stack.",
+		inputSchema: ZOrderParams,
+	}),
 };
 
 // Command types for the return value
+export type TextShadow = {
+	color: string;
+	blur: number;
+	offsetX: number;
+	offsetY: number;
+};
+
 export type CanvasCommand =
 	| { tool: "moveObject"; id?: string; target?: string; dx: number; dy: number }
 	| {
@@ -178,7 +314,65 @@ export type CanvasCommand =
 			height?: number;
 	  }
 	| { tool: "editImage"; id?: string; prompt: string }
-	| { tool: "combineSelection" };
+	| {
+			tool: "editText";
+			id?: string;
+			text?: string;
+			fontSize?: number;
+			fontWeight?: string;
+			fontFamily?: string;
+			shadow?: TextShadow;
+	  }
+	| { tool: "combineSelection" }
+	// Shape creation commands
+	| {
+			tool: "createRect";
+			x: number;
+			y: number;
+			width: number;
+			height: number;
+			fill?: string;
+			stroke?: string;
+			strokeWidth?: number;
+			radius?: number;
+	  }
+	| {
+			tool: "createEllipse";
+			x: number;
+			y: number;
+			width: number;
+			height: number;
+			fill?: string;
+			stroke?: string;
+			strokeWidth?: number;
+	  }
+	| {
+			tool: "createLine";
+			x1: number;
+			y1: number;
+			x2: number;
+			y2: number;
+			stroke?: string;
+			strokeWidth?: number;
+	  }
+	| {
+			tool: "createText";
+			text: string;
+			x: number;
+			y: number;
+			fontSize?: number;
+			fontWeight?: string;
+			fontFamily?: string;
+			fill?: string;
+			stroke?: string;
+			strokeWidth?: number;
+			shadow?: TextShadow;
+	  }
+	// Z-order commands
+	| { tool: "bringToFront"; id?: string }
+	| { tool: "sendToBack"; id?: string }
+	| { tool: "moveUp"; id?: string }
+	| { tool: "moveDown"; id?: string };
 
 // Schema for selected shape info passed to the AI
 const SelectedShapeInfo = v.object({
@@ -252,7 +446,91 @@ export const interpret = action({
 					prompt: v.string(),
 				}),
 				v.object({
+					tool: v.literal("editText"),
+					id: v.optional(v.string()),
+					text: v.optional(v.string()),
+					fontSize: v.optional(v.number()),
+					fontWeight: v.optional(v.string()),
+					fontFamily: v.optional(v.string()),
+					shadow: v.optional(
+						v.object({
+							color: v.string(),
+							blur: v.number(),
+							offsetX: v.number(),
+							offsetY: v.number(),
+						}),
+					),
+				}),
+				v.object({
 					tool: v.literal("combineSelection"),
+				}),
+				// Shape creation commands
+				v.object({
+					tool: v.literal("createRect"),
+					x: v.number(),
+					y: v.number(),
+					width: v.number(),
+					height: v.number(),
+					fill: v.optional(v.string()),
+					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
+					radius: v.optional(v.number()),
+				}),
+				v.object({
+					tool: v.literal("createEllipse"),
+					x: v.number(),
+					y: v.number(),
+					width: v.number(),
+					height: v.number(),
+					fill: v.optional(v.string()),
+					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
+				}),
+				v.object({
+					tool: v.literal("createLine"),
+					x1: v.number(),
+					y1: v.number(),
+					x2: v.number(),
+					y2: v.number(),
+					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
+				}),
+				v.object({
+					tool: v.literal("createText"),
+					text: v.string(),
+					x: v.number(),
+					y: v.number(),
+					fontSize: v.optional(v.number()),
+					fontWeight: v.optional(v.string()),
+					fontFamily: v.optional(v.string()),
+					fill: v.optional(v.string()),
+					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
+					shadow: v.optional(
+						v.object({
+							color: v.string(),
+							blur: v.number(),
+							offsetX: v.number(),
+							offsetY: v.number(),
+						}),
+					),
+				}),
+				// Z-order commands
+				v.object({
+					tool: v.literal("bringToFront"),
+					id: v.optional(v.string()),
+				}),
+				v.object({
+					tool: v.literal("sendToBack"),
+					id: v.optional(v.string()),
+				}),
+				v.object({
+					tool: v.literal("moveUp"),
+					id: v.optional(v.string()),
+				}),
+				v.object({
+					tool: v.literal("moveDown"),
+					id: v.optional(v.string()),
 				}),
 			),
 		),
@@ -341,5 +619,339 @@ export const interpret = action({
 
 		console.log("canvas_ai.final", { commands });
 		return { commands };
+	},
+});
+
+// Helper to generate human-readable label from a tool call
+function generateLabel(toolName: string, args: Record<string, unknown>): string {
+	switch (toolName) {
+		case "moveObject": {
+			const dx = args.dx as number;
+			const dy = args.dy as number;
+			if (Math.abs(dx) > Math.abs(dy)) {
+				return dx > 0 ? "Move right" : "Move left";
+			}
+			return dy > 0 ? "Move down" : "Move up";
+		}
+		case "resize": {
+			if (args.scale !== undefined) {
+				const scale = args.scale as number;
+				return scale > 1 ? `Make ${Math.round((scale - 1) * 100)}% bigger` : `Make ${Math.round((1 - scale) * 100)}% smaller`;
+			}
+			return "Resize";
+		}
+		case "changeColor":
+			if (args.fill) return `Paint ${args.fill}`;
+			if (args.stroke) return `Stroke ${args.stroke}`;
+			return "Change color";
+		case "generateSvg":
+			return "Generate SVG";
+		case "generateImage":
+			return `Generate ${(args.prompt as string)?.slice(0, 20) || "image"}...`;
+		case "editImage":
+			return `Edit: ${(args.prompt as string)?.slice(0, 20) || "image"}...`;
+		case "editText": {
+			if (args.fontWeight === "bold" || args.fontWeight === "700") return "Make bold";
+			if (args.fontWeight === "normal" || args.fontWeight === "400") return "Make normal weight";
+			if (args.fontSize) return `Set font size to ${args.fontSize}px`;
+			if (args.fontFamily) return `Change font to ${args.fontFamily}`;
+			if (args.shadow) return "Add text shadow";
+			if (args.text) return `Change text to "${(args.text as string).slice(0, 15)}..."`;
+			return "Edit text";
+		}
+		case "combineSelection":
+			return "Combine into one";
+		case "createRect":
+			return `Add ${args.fill || "a"} rectangle`;
+		case "createEllipse":
+			return `Add ${args.fill || "a"} circle`;
+		case "createLine":
+			return "Add a line";
+		case "createText":
+			return `Add text "${(args.text as string)?.slice(0, 15) || ""}"`;
+		case "bringToFront":
+			return "Bring to front";
+		case "sendToBack":
+			return "Send to back";
+		case "moveUp":
+			return "Move up one layer";
+		case "moveDown":
+			return "Move down one layer";
+		default:
+			return toolName;
+	}
+}
+
+// Action to suggest contextual actions for the right-click menu
+export const suggestActions = action({
+	args: {
+		imageContext: v.optional(v.string()),
+		contextDescription: v.optional(v.string()),
+		selectedShapes: v.optional(v.array(SelectedShapeInfo)),
+	},
+	returns: v.object({
+		suggestions: v.array(
+			v.object({
+				label: v.string(),
+				command: v.union(
+					v.object({
+						tool: v.literal("moveObject"),
+						id: v.optional(v.string()),
+						dx: v.number(),
+						dy: v.number(),
+					}),
+					v.object({
+						tool: v.literal("resize"),
+						id: v.optional(v.string()),
+						width: v.optional(v.number()),
+						height: v.optional(v.number()),
+						scale: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("changeColor"),
+						id: v.optional(v.string()),
+						fill: v.optional(v.string()),
+						stroke: v.optional(v.string()),
+					}),
+					v.object({
+						tool: v.literal("generateSvg"),
+						id: v.optional(v.string()),
+						svg: v.string(),
+						x: v.optional(v.number()),
+						y: v.optional(v.number()),
+						width: v.optional(v.number()),
+						height: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("generateImage"),
+						id: v.optional(v.string()),
+						prompt: v.string(),
+						x: v.optional(v.number()),
+						y: v.optional(v.number()),
+						width: v.optional(v.number()),
+						height: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("editImage"),
+						id: v.optional(v.string()),
+						prompt: v.string(),
+					}),
+					v.object({
+						tool: v.literal("editText"),
+						id: v.optional(v.string()),
+						text: v.optional(v.string()),
+						fontSize: v.optional(v.number()),
+						fontWeight: v.optional(v.string()),
+						fontFamily: v.optional(v.string()),
+						shadow: v.optional(
+							v.object({
+								color: v.string(),
+								blur: v.number(),
+								offsetX: v.number(),
+								offsetY: v.number(),
+							}),
+						),
+					}),
+					v.object({
+						tool: v.literal("combineSelection"),
+					}),
+					v.object({
+						tool: v.literal("createRect"),
+						x: v.number(),
+						y: v.number(),
+						width: v.number(),
+						height: v.number(),
+						fill: v.optional(v.string()),
+						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
+						radius: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("createEllipse"),
+						x: v.number(),
+						y: v.number(),
+						width: v.number(),
+						height: v.number(),
+						fill: v.optional(v.string()),
+						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("createLine"),
+						x1: v.number(),
+						y1: v.number(),
+						x2: v.number(),
+						y2: v.number(),
+						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
+					}),
+					v.object({
+						tool: v.literal("createText"),
+						text: v.string(),
+						x: v.number(),
+						y: v.number(),
+						fontSize: v.optional(v.number()),
+						fontWeight: v.optional(v.string()),
+						fontFamily: v.optional(v.string()),
+						fill: v.optional(v.string()),
+						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
+						shadow: v.optional(
+							v.object({
+								color: v.string(),
+								blur: v.number(),
+								offsetX: v.number(),
+								offsetY: v.number(),
+							}),
+						),
+					}),
+					v.object({
+						tool: v.literal("bringToFront"),
+						id: v.optional(v.string()),
+					}),
+					v.object({
+						tool: v.literal("sendToBack"),
+						id: v.optional(v.string()),
+					}),
+					v.object({
+						tool: v.literal("moveUp"),
+						id: v.optional(v.string()),
+					}),
+					v.object({
+						tool: v.literal("moveDown"),
+						id: v.optional(v.string()),
+					}),
+				),
+			}),
+		),
+	}),
+	handler: async (_ctx, args) => {
+		// Validate model is configured
+		selectModel();
+
+		// Build context-aware system prompt
+		const hasSelection = args.selectedShapes && args.selectedShapes.length > 0;
+		const selectionType = hasSelection
+			? args.selectedShapes!.length > 1
+				? "multiple"
+				: args.selectedShapes![0].type
+			: "none";
+
+		let systemPrompt = `You are a UI assistant for a vector canvas app. Suggest exactly 5 useful actions by calling 5 tools.
+
+`;
+		if (hasSelection) {
+			systemPrompt += `IMPORTANT: The user has ${args.selectedShapes!.length} element(s) selected.
+ALL suggestions must operate on the EXISTING selection. Do NOT suggest creating new shapes (createRect, createEllipse, createLine, createText, generateImage, generateSvg).
+
+Only use these tools for selected elements:
+- changeColor: Change fill or stroke color
+- resize: Make bigger/smaller (use scale like 1.2 for 20% bigger, 0.8 for 20% smaller)
+- moveObject: Move left/right/up/down (use dx/dy in pixels)
+- bringToFront, sendToBack, moveUp, moveDown: Change layer order
+${selectionType === "text" ? "- editText: Edit text properties (fontSize, fontWeight like 'bold'/'700', fontFamily, shadow)" : ""}
+${selectionType === "image" ? "- editImage: Edit the image with AI" : ""}
+${selectionType === "multiple" ? "- combineSelection: Merge selected elements into one image" : ""}
+
+Be specific with values based on the element's current properties.`;
+		} else {
+			systemPrompt += `The canvas is empty or nothing is selected. Suggest creating new elements:
+- createRect, createEllipse, createLine, createText: Create shapes
+- generateImage: Generate an AI image
+
+Position new elements reasonably on the canvas (e.g., x: 100-400, y: 100-300).
+Use appealing colors and reasonable sizes.`;
+		}
+
+		systemPrompt += `
+
+The tools you call will become clickable suggestion buttons for the user.`;
+
+		// Build context
+		const contextParts: string[] = [];
+		if (args.contextDescription) {
+			contextParts.push(`Current view: ${args.contextDescription}`);
+		}
+		if (args.selectedShapes && args.selectedShapes.length > 0) {
+			contextParts.push(
+				"Selected shapes:",
+				JSON.stringify(args.selectedShapes, null, 2),
+			);
+		} else {
+			contextParts.push("No shapes currently selected (empty canvas or nothing selected).");
+		}
+
+		const userContent: Array<
+			{ type: "text"; text: string } | { type: "image"; image: string }
+		> = [];
+
+		if (args.imageContext) {
+			userContent.push({ type: "image", image: args.imageContext });
+		}
+		userContent.push({
+			type: "text",
+			text: `${contextParts.join("\n")}\n\nCall exactly 5 tools to suggest actions.`,
+		});
+
+		try {
+			const result = await generateText({
+				model: "google/gemini-3-flash",
+				system: systemPrompt,
+				messages: [{ role: "user", content: userContent }],
+				tools: canvasTools,
+				stopWhen: stepCountIs(1),
+				providerOptions: {
+					google: {
+						thinkingConfig: {
+							includeThoughts: false,
+							thinkingLevel: "low",
+						},
+					} satisfies GoogleGenerativeAIProviderOptions,
+				},
+			});
+
+			// Tools that create new elements (should be filtered when something is selected)
+			const creationTools = new Set([
+				"createRect",
+				"createEllipse",
+				"createLine",
+				"createText",
+				"generateImage",
+				"generateSvg",
+			]);
+
+			// Extract tool calls as suggestions with auto-generated labels
+			const suggestions: Array<{
+				label: string;
+				command: CanvasCommand;
+			}> = [];
+
+			for (const step of result.steps) {
+				for (const toolCall of step.toolCalls) {
+					if (suggestions.length >= 5) break;
+					const toolName = toolCall.toolName as keyof typeof canvasTools;
+					const toolArgs = toolCall.input as Record<string, unknown>;
+
+					// Filter out creation tools when something is selected
+					if (hasSelection && creationTools.has(toolName)) {
+						continue;
+					}
+
+					suggestions.push({
+						label: generateLabel(toolName, toolArgs),
+						command: {
+							tool: toolName,
+							...toolArgs,
+						} as CanvasCommand,
+					});
+				}
+			}
+
+			console.log("suggestActions.result", { suggestions });
+			return { suggestions };
+		} catch (error) {
+			console.error("suggestActions error:", error);
+			return { suggestions: [] };
+		}
 	},
 });
