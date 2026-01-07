@@ -2,9 +2,22 @@ import type {
 	AnyCommand,
 	CanvasShape,
 	EllipseShape,
+	LineShape,
 	RectShape,
 	SvgShape,
+	TextShape,
 } from "./types";
+
+// Helper type for shapes with width/height
+type SizedShape = RectShape | EllipseShape | SvgShape | { type: "image"; width: number; height: number };
+
+function isSizedShape(s: CanvasShape): s is CanvasShape & { width: number; height: number } {
+	return "width" in s && "height" in s;
+}
+
+function isRectShape(s: CanvasShape): s is RectShape {
+	return s.type === "rect";
+}
 
 export function applyCommandsToState(
 	prev: CanvasShape[],
@@ -41,111 +54,56 @@ export function applyCommandsToState(
 			next = next.filter((s) => s.id !== cmd.id);
 			continue;
 		}
-		if (cmd.tool === "moveObject") {
-			const id = selectId(cmd.id);
-			if (!id) continue;
-			next = next.map((s) =>
-				s.id !== id
-					? s
-					: s.type === "line"
-						? {
-								...s,
-								x: s.x + (cmd.dx || 0),
-								y: s.y + (cmd.dy || 0),
-								x2: s.x2 + (cmd.dx || 0),
-								y2: s.y2 + (cmd.dy || 0),
-							}
-						: { ...s, x: s.x + (cmd.dx || 0), y: s.y + (cmd.dy || 0) },
-			);
-			continue;
-		}
-		if (cmd.tool === "resize") {
+		if (cmd.tool === "editShape") {
 			const id = selectId(cmd.id);
 			if (!id) continue;
 			next = next.map((s) => {
 				if (s.id !== id) return s;
-				if (s.type === "line") {
-					const scale = cmd.scale || 1;
-					const cx = (s.x + s.x2) / 2;
-					const cy = (s.y + s.y2) / 2;
-					return {
-						...s,
-						x: cx + (s.x - cx) * scale,
-						y: cy + (s.y - cy) * scale,
-						x2: cx + (s.x2 - cx) * scale,
-						y2: cy + (s.y2 - cy) * scale,
-					};
+				let updated = { ...s };
+
+				// Movement
+				if (cmd.x !== undefined) updated.x = cmd.x;
+				if (cmd.y !== undefined) updated.y = cmd.y;
+				if (cmd.dx !== undefined) {
+					updated.x += cmd.dx;
+					if (updated.type === "line") updated.x2 += cmd.dx;
 				}
-				if (s.type === "svg") {
-					if (cmd.scale) {
-						return {
-							...s,
-							width: Math.max(1, s.width * (cmd.scale || 1)),
-							height: Math.max(1, s.height * (cmd.scale || 1)),
-						} as CanvasShape;
+				if (cmd.dy !== undefined) {
+					updated.y += cmd.dy;
+					if (updated.type === "line") updated.y2 += cmd.dy;
+				}
+
+				// Line-specific
+				if (updated.type === "line") {
+					if (cmd.x2 !== undefined) updated.x2 = cmd.x2;
+					if (cmd.y2 !== undefined) updated.y2 = cmd.y2;
+				}
+
+				// Sizing
+				if ("width" in updated && "height" in updated) {
+					if (cmd.scale !== undefined) {
+						updated.width = Math.max(1, updated.width * cmd.scale);
+						updated.height = Math.max(1, updated.height * cmd.scale);
+					} else {
+						if (cmd.width !== undefined)
+							updated.width = Math.max(1, cmd.width);
+						if (cmd.height !== undefined)
+							updated.height = Math.max(1, cmd.height);
 					}
-					return {
-						...s,
-						width: Math.max(1, cmd.width ?? s.width),
-						height: Math.max(1, cmd.height ?? s.height),
-					} as CanvasShape;
 				}
-				if (s.type === "image") {
-					if (cmd.scale) {
-						return {
-							...s,
-							width: Math.max(1, s.width * (cmd.scale || 1)),
-							height: Math.max(1, s.height * (cmd.scale || 1)),
-						} as CanvasShape;
-					}
-					return {
-						...s,
-						width: Math.max(1, cmd.width ?? s.width),
-						height: Math.max(1, cmd.height ?? s.height),
-					} as CanvasShape;
+
+				// Styling
+				if (cmd.fill !== undefined) updated.fill = cmd.fill;
+				if (cmd.stroke !== undefined) updated.stroke = cmd.stroke;
+				if (cmd.strokeWidth !== undefined)
+					updated.strokeWidth = cmd.strokeWidth;
+				if (cmd.radius !== undefined && "radius" in updated) {
+					updated.radius = cmd.radius;
 				}
-				if ("width" in s && "height" in s) {
-					if (cmd.scale) {
-						return {
-							...s,
-							width: Math.max(
-								1,
-								(s as RectShape | EllipseShape).width * (cmd.scale || 1),
-							),
-							height: Math.max(
-								1,
-								(s as RectShape | EllipseShape).height * (cmd.scale || 1),
-							),
-						} as CanvasShape;
-					}
-					return {
-						...s,
-						width: Math.max(
-							1,
-							cmd.width ?? (s as RectShape | EllipseShape).width,
-						),
-						height: Math.max(
-							1,
-							cmd.height ?? (s as RectShape | EllipseShape).height,
-						),
-					} as CanvasShape;
-				}
-				return s;
+
+				return updated as CanvasShape;
 			});
 			continue;
-		}
-		if (cmd.tool === "changeColor") {
-			const id = selectId(cmd.id);
-			if (!id) continue;
-			next = next.map((s) =>
-				s.id !== id
-					? s
-					: ({
-							...s,
-							fill: cmd.fill ?? s.fill,
-							stroke: cmd.stroke ?? s.stroke,
-						} as CanvasShape),
-			);
 		}
 	}
 	return next;
@@ -186,43 +144,66 @@ export function invertCommands(
 			if (prior) inverses.push({ tool: "replaceShape", shape: prior });
 			continue;
 		}
-		if (cmd.tool === "moveObject") {
-			const id = resolveId(cmd);
-			if (!id) continue;
-			const dx = -((cmd as { dx?: number }).dx || 0);
-			const dy = -((cmd as { dy?: number }).dy || 0);
-			inverses.push({ tool: "moveObject", id, dx, dy });
-			continue;
-		}
-		if (cmd.tool === "resize") {
+		if (cmd.tool === "editShape") {
 			const id = resolveId(cmd);
 			if (!id) continue;
 			const s = findShape(id);
 			if (!s) continue;
-			const scale = (cmd as { scale?: number }).scale;
-			if (scale) {
-				inverses.push({ tool: "resize", id, scale: 1 / (scale || 1) });
-			} else if ("width" in s && "height" in s) {
-				inverses.push({
-					tool: "resize",
-					id,
-					width: (s as RectShape | EllipseShape).width,
-					height: (s as RectShape | EllipseShape).height,
-				});
+			const updates: AnyCommand = { tool: "editShape", id };
+
+			if (cmd.dx !== undefined) {
+				updates.dx = -cmd.dx;
 			}
+			if (cmd.dy !== undefined) {
+				updates.dy = -cmd.dy;
+			}
+			if (cmd.x !== undefined) updates.x = s.x;
+			if (cmd.y !== undefined) updates.y = s.y;
+
+			if (cmd.scale !== undefined) {
+				updates.scale = 1 / cmd.scale;
+			} else {
+				if (cmd.width !== undefined && isSizedShape(s)) updates.width = s.width;
+				if (cmd.height !== undefined && isSizedShape(s))
+					updates.height = s.height;
+			}
+
+			if (cmd.fill !== undefined) updates.fill = s.fill;
+			if (cmd.stroke !== undefined) updates.stroke = s.stroke;
+			if (cmd.strokeWidth !== undefined) updates.strokeWidth = s.strokeWidth;
+			if (cmd.radius !== undefined && isRectShape(s))
+				updates.radius = s.radius;
+
+			if (s.type === "line") {
+				if (cmd.x2 !== undefined) updates.x2 = s.x2;
+				if (cmd.y2 !== undefined) updates.y2 = s.y2;
+			}
+
+			inverses.push(updates);
 			continue;
 		}
-		if (cmd.tool === "changeColor") {
+		if (cmd.tool === "editText") {
 			const id = resolveId(cmd);
 			if (!id) continue;
 			const s = findShape(id);
-			if (!s) continue;
-			inverses.push({
-				tool: "changeColor",
-				id,
-				fill: (s as { fill?: string }).fill,
-				stroke: (s as { stroke?: string }).stroke,
-			});
+			if (!s || s.type !== "text") continue;
+			const updates: AnyCommand = { tool: "editText", id };
+
+			if (cmd.text !== undefined) updates.text = s.text;
+			if (cmd.fontSize !== undefined) updates.fontSize = s.fontSize;
+			if (cmd.fontWeight !== undefined) updates.fontWeight = s.fontWeight;
+			if (cmd.fontFamily !== undefined) updates.fontFamily = s.fontFamily;
+			if (cmd.fill !== undefined) updates.fill = s.fill;
+			if (cmd.stroke !== undefined) updates.stroke = s.stroke;
+			if (cmd.strokeWidth !== undefined) updates.strokeWidth = s.strokeWidth;
+			if (cmd.shadow !== undefined) updates.shadow = s.shadow;
+			if (cmd.x !== undefined) updates.x = s.x;
+			if (cmd.y !== undefined) updates.y = s.y;
+			if (cmd.dx !== undefined) updates.dx = -cmd.dx;
+			if (cmd.dy !== undefined) updates.dy = -cmd.dy;
+
+			inverses.push(updates);
+			continue;
 		}
 	}
 	inverses.reverse();

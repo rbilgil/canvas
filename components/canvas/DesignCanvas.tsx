@@ -13,9 +13,14 @@ import {
 import { createPortal } from "react-dom";
 import { runLassoEdit as externalRunLassoEdit } from "@/components/canvas/imageLasso";
 import {
+	applyZOrder,
 	type Corner,
 	centroid,
+	computeEditShapeUpdates,
+	computeEditTextUpdates,
 	getShapeBounds,
+	isAsyncCommand,
+	isZOrderCommand,
 	moveShape,
 	normalizeRect,
 	rectsIntersect,
@@ -23,6 +28,7 @@ import {
 	resizeRectShape,
 	SHAPE_DEFAULTS,
 	SIZES,
+	shapeFromCommand,
 } from "@/components/canvas/lib";
 import {
 	applyOperations,
@@ -622,233 +628,91 @@ function SingleDesignCanvas({
 			_opts?: { recordUndo?: boolean },
 			context?: { userPrompt: string; canvasDataUrl: string },
 		): Promise<void> => {
-			const imageCommands = commands.filter(
-				(c) =>
-					c.tool === "generateImage" ||
-					c.tool === "editImage" ||
-					c.tool === "combineSelection",
+			// Separate async (image) commands from synchronous ones
+			const asyncCommands = commands.filter(
+				(c) => "tool" in c && isAsyncCommand(c as CanvasToolCommand),
 			) as Array<CanvasToolCommand>;
-			const restCommands = commands.filter(
-				(c) =>
-					c.tool !== "generateImage" &&
-					c.tool !== "editImage" &&
-					c.tool !== "combineSelection",
+			const syncCommands = commands.filter(
+				(c) => !("tool" in c) || !isAsyncCommand(c as CanvasToolCommand),
 			);
 
-			if (restCommands.length > 0) {
-				// Convert commands to operations where possible
-				for (const cmd of restCommands) {
-					if (cmd.tool === "deleteObject" && "id" in cmd && cmd.id) {
-						const shape = shapes.find((s) => s.id === cmd.id);
-						if (shape) deleteShapeOp(shape);
-					} else if (cmd.tool === "replaceShape" && "shape" in cmd) {
-						const existingShape = shapes.find((s) => s.id === cmd.shape.id);
-						if (existingShape) {
-							updateShapeOp(cmd.shape.id, existingShape, cmd.shape);
-						} else {
-							addShapeOp(cmd.shape);
-						}
-					} else if (cmd.tool === "changeColor") {
-						// Handle color changes from AI
-						const targetId = cmd.id || cmd.target || selectedId;
-						if (!targetId) continue;
-						const shape = shapes.find((s) => s.id === targetId);
-						if (!shape) continue;
-						const updates: Partial<CanvasShape> = {};
-						if (cmd.fill !== undefined) updates.fill = cmd.fill;
-						if (cmd.stroke !== undefined) updates.stroke = cmd.stroke;
-						if (Object.keys(updates).length > 0) {
-							updateShapeOp(targetId, shape, updates);
-						}
-					} else if (cmd.tool === "moveObject") {
-						// Handle move from AI
-						const targetId = cmd.id || cmd.target || selectedId;
-						if (!targetId) continue;
-						const shape = shapes.find((s) => s.id === targetId);
-						if (!shape) continue;
-						const dx = cmd.dx ?? 0;
-						const dy = cmd.dy ?? 0;
-						if (shape.type === "line") {
-							updateShapeOp(targetId, shape, {
-								x: shape.x + dx,
-								y: shape.y + dy,
-								x2: shape.x2 + dx,
-								y2: shape.y2 + dy,
-							} as Partial<CanvasShape>);
-						} else {
-							updateShapeOp(targetId, shape, {
-								x: shape.x + dx,
-								y: shape.y + dy,
-							});
-						}
-					} else if (cmd.tool === "resize") {
-						// Handle resize from AI
-						const targetId = cmd.id || cmd.target || selectedId;
-						if (!targetId) continue;
-						const shape = shapes.find((s) => s.id === targetId);
-						if (!shape) continue;
-						if (
-							shape.type === "rect" ||
-							shape.type === "ellipse" ||
-							shape.type === "image" ||
-							shape.type === "svg"
-						) {
-							const updates: { width?: number; height?: number } = {};
-							if (cmd.scale !== undefined) {
-								updates.width = shape.width * cmd.scale;
-								updates.height = shape.height * cmd.scale;
-							} else {
-								if (cmd.width !== undefined) updates.width = cmd.width;
-								if (cmd.height !== undefined) updates.height = cmd.height;
-							}
-							if (Object.keys(updates).length > 0) {
-								updateShapeOp(targetId, shape, updates as Partial<CanvasShape>);
-							}
-						}
-					} else if (cmd.tool === "generateSvg" && "svg" in cmd && cmd.svg) {
-						// Handle SVG generation from AI
-						const id = cmd.id || createShapeId("svg");
-						const newShape: CanvasShape = {
-							id,
-							type: "svg",
-							x: cmd.x ?? 40,
-							y: cmd.y ?? 40,
-							width: cmd.width ?? 100,
-							height: cmd.height ?? 100,
-							svg: cmd.svg,
-						};
-						addShapeOp(newShape);
-					} else if (cmd.tool === "createRect") {
-						// Handle rectangle creation from AI
-						const newShape: CanvasShape = {
-							id: createShapeId("rect"),
-							type: "rect",
-							x: cmd.x ?? 100,
-							y: cmd.y ?? 100,
-							width: cmd.width ?? 100,
-							height: cmd.height ?? 100,
-							fill: cmd.fill ?? "transparent",
-							stroke: cmd.stroke ?? "#0f172a",
-							strokeWidth: cmd.strokeWidth ?? 2,
-							radius: cmd.radius,
-						};
-						addShapeOp(newShape);
-					} else if (cmd.tool === "createEllipse") {
-						// Handle ellipse creation from AI
-						const newShape: CanvasShape = {
-							id: createShapeId("ellipse"),
-							type: "ellipse",
-							x: cmd.x ?? 100,
-							y: cmd.y ?? 100,
-							width: cmd.width ?? 100,
-							height: cmd.height ?? 100,
-							fill: cmd.fill ?? "transparent",
-							stroke: cmd.stroke ?? "#0f172a",
-							strokeWidth: cmd.strokeWidth ?? 2,
-						};
-						addShapeOp(newShape);
-					} else if (cmd.tool === "createLine") {
-						// Handle line creation from AI
-						const newShape: CanvasShape = {
-							id: createShapeId("line"),
-							type: "line",
-							x: cmd.x1 ?? 100,
-							y: cmd.y1 ?? 100,
-							x2: cmd.x2 ?? 200,
-							y2: cmd.y2 ?? 200,
-							stroke: cmd.stroke ?? "#0f172a",
-							strokeWidth: cmd.strokeWidth ?? 2,
-						};
-						addShapeOp(newShape);
-					} else if (cmd.tool === "createText") {
-						// Handle text creation from AI
-						const newShape: CanvasShape = {
-							id: createShapeId("text"),
-							type: "text",
-							x: cmd.x ?? 100,
-							y: cmd.y ?? 100,
-							text: cmd.text ?? "Text",
-							fontSize: cmd.fontSize ?? 20,
-							fontWeight: cmd.fontWeight ?? "400",
-							fontFamily: cmd.fontFamily ?? "ui-sans-serif, system-ui",
-							fill: cmd.fill ?? "#0f172a",
-							stroke: cmd.stroke,
-							strokeWidth: cmd.strokeWidth,
-							shadow: cmd.shadow,
-						};
-						addShapeOp(newShape);
-					} else if (
-						cmd.tool === "bringToFront" ||
-						cmd.tool === "sendToBack" ||
-						cmd.tool === "moveUp" ||
-						cmd.tool === "moveDown"
-					) {
-						// Handle z-order commands from AI
-						const targetId = cmd.id || selectedId;
-						if (!targetId) continue;
-						const shapeIndex = shapes.findIndex((s) => s.id === targetId);
-						if (shapeIndex === -1) continue;
+			// Process synchronous commands
+			for (const cmd of syncCommands) {
+				// Local undo commands
+				if (cmd.tool === "deleteObject" && "id" in cmd && cmd.id) {
+					const shape = shapes.find((s) => s.id === cmd.id);
+					if (shape) deleteShapeOp(shape);
+					continue;
+				}
+				if (cmd.tool === "replaceShape" && "shape" in cmd) {
+					const existingShape = shapes.find((s) => s.id === cmd.shape.id);
+					if (existingShape) {
+						updateShapeOp(cmd.shape.id, existingShape, cmd.shape);
+					} else {
+						addShapeOp(cmd.shape);
+					}
+					continue;
+				}
 
-						setShapes((prev) => {
-							const newShapes = [...prev];
-							const idx = newShapes.findIndex((s) => s.id === targetId);
-							if (idx === -1) return prev;
+				// Cast to CanvasToolCommand for the remaining handlers
+				// (we've already handled local undo commands above)
+				const toolCmd = cmd as CanvasToolCommand;
 
-							if (cmd.tool === "bringToFront") {
-								// Move to end of array (top of stack)
-								const [shape] = newShapes.splice(idx, 1);
-								newShapes.push(shape);
-							} else if (cmd.tool === "sendToBack") {
-								// Move to start of array (bottom of stack)
-								const [shape] = newShapes.splice(idx, 1);
-								newShapes.unshift(shape);
-							} else if (cmd.tool === "moveUp" && idx < newShapes.length - 1) {
-								// Swap with next shape
-								[newShapes[idx], newShapes[idx + 1]] = [
-									newShapes[idx + 1],
-									newShapes[idx],
-								];
-							} else if (cmd.tool === "moveDown" && idx > 0) {
-								// Swap with previous shape
-								[newShapes[idx], newShapes[idx - 1]] = [
-									newShapes[idx - 1],
-									newShapes[idx],
-								];
-							}
+				// Shape editing
+				if (toolCmd.tool === "editShape") {
+					const targetId = toolCmd.id || toolCmd.target || selectedId;
+					if (!targetId) continue;
+					const shape = shapes.find((s) => s.id === targetId);
+					if (!shape) continue;
+					const updates = computeEditShapeUpdates(shape, toolCmd);
+					if (updates) {
+						updateShapeOp(targetId, shape, updates);
+					}
+					continue;
+				}
 
-							// Persist z-order to backend
-							void updateDesignConfig({
-								designId: design.id as Id<"designs">,
-								config: { shapes: newShapes },
-							});
-							return newShapes;
+				// Text editing
+				if (toolCmd.tool === "editText") {
+					const targetId = toolCmd.id || selectedId;
+					if (!targetId) continue;
+					const shape = shapes.find((s) => s.id === targetId);
+					if (!shape || shape.type !== "text") continue;
+					const updates = computeEditTextUpdates(shape, toolCmd);
+					if (updates) {
+						updateShapeOp(targetId, shape, updates);
+					}
+					continue;
+				}
+
+				// Shape creation commands
+				const newShape = shapeFromCommand(toolCmd, {
+					createId: createShapeId,
+				});
+				if (newShape) {
+					addShapeOp(newShape);
+					continue;
+				}
+
+				// Z-order commands
+				if (isZOrderCommand(toolCmd)) {
+					const targetId = toolCmd.id || selectedId;
+					if (!targetId) continue;
+					const reordered = applyZOrder(shapes, targetId, toolCmd.tool);
+					if (reordered) {
+						setShapes(reordered);
+						void updateDesignConfig({
+							designId: design.id as Id<"designs">,
+							config: { shapes: reordered },
 						});
-					} else if (cmd.tool === "editText") {
-						// Handle text editing from AI
-						const targetId = cmd.id || selectedId;
-						if (!targetId) continue;
-						const shape = shapes.find((s) => s.id === targetId);
-						if (!shape || shape.type !== "text") continue;
-						const updates: Partial<CanvasShape> = {};
-						if (cmd.text !== undefined) updates.text = cmd.text;
-						if (cmd.fontSize !== undefined) updates.fontSize = cmd.fontSize;
-						if (cmd.fontWeight !== undefined) updates.fontWeight = cmd.fontWeight;
-						if (cmd.fontFamily !== undefined) updates.fontFamily = cmd.fontFamily;
-						if (cmd.shadow !== undefined) updates.shadow = cmd.shadow;
-						if (cmd.fill !== undefined) updates.fill = cmd.fill;
-						if (cmd.stroke !== undefined) updates.stroke = cmd.stroke;
-						if (cmd.strokeWidth !== undefined) updates.strokeWidth = cmd.strokeWidth;
-						if (Object.keys(updates).length > 0) {
-							updateShapeOp(targetId, shape, updates);
-						}
 					}
 				}
 			}
 
-			if (imageCommands.length > 0) {
+			// Process async (image) commands
+			if (asyncCommands.length > 0) {
 				setIsProcessing(true);
 				try {
-					for (const cmd of imageCommands) {
+					for (const cmd of asyncCommands) {
 						if (cmd.tool === "generateImage") {
 							const prompt = cmd.prompt || "";
 							// Only pass canvas context as reference when something is selected
@@ -1306,11 +1170,7 @@ Generate a polished, complete image that feels like a single unified artwork, no
 
 				// Build selected shapes info
 				const effectiveSelectedIds =
-					selectedIds.length > 0
-						? selectedIds
-						: selectedId
-							? [selectedId]
-							: [];
+					selectedIds.length > 0 ? selectedIds : selectedId ? [selectedId] : [];
 				const selectedShapesInfo = effectiveSelectedIds
 					.map((id) => shapes.find((s) => s.id === id))
 					.filter((s): s is NonNullable<typeof s> => s != null)

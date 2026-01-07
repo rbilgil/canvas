@@ -1,15 +1,15 @@
-import { z } from "zod";
-import {
+import type { z } from "zod";
+import type {
 	BaseShapeSchema,
-	RectShapeSchema,
-	EllipseShapeSchema,
-	LineShapeSchema,
-	TextShapeSchema,
-	SvgShapeSchema,
-	ImageShapeSchema,
-	PathShapeSchema,
-	PathPointSchema,
 	CanvasShapeSchema,
+	EllipseShapeSchema,
+	ImageShapeSchema,
+	LineShapeSchema,
+	PathPointSchema,
+	PathShapeSchema,
+	RectShapeSchema,
+	SvgShapeSchema,
+	TextShapeSchema,
 } from "@/lib/design-config";
 
 // =============================================================================
@@ -37,9 +37,7 @@ export type CanvasShape = z.infer<typeof CanvasShapeSchema>;
 
 export type CanvasToolCommand = {
 	tool:
-		| "moveObject"
-		| "resize"
-		| "changeColor"
+		| "editShape"
 		| "generateSvg"
 		| "generateImage"
 		| "editImage"
@@ -85,7 +83,7 @@ export type CanvasToolCommand = {
 		offsetX: number;
 		offsetY: number;
 	};
-	// Rect-specific
+	// Shape-specific
 	radius?: number;
 };
 

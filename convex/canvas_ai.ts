@@ -23,29 +23,26 @@ const hexColor = z
 	);
 
 // Tool parameter schemas (without the "tool" discriminator field)
-const MoveParams = z.object({
+const EditShapeParams = z.object({
 	id: z
 		.string()
 		.optional()
 		.describe(
-			"The shape ID to move. Required when multiple shapes are selected.",
+			"The shape ID to edit. Required when multiple shapes are selected.",
 		),
+	x: z.number().optional().describe("New absolute X position."),
+	y: z.number().optional().describe("New absolute Y position."),
 	dx: z
 		.number()
+		.optional()
 		.describe(
-			"Pixels to move horizontally. Positive = right, negative = left.",
+			"Relative horizontal movement in pixels. Positive = right, negative = left.",
 		),
 	dy: z
 		.number()
-		.describe("Pixels to move vertically. Positive = down, negative = up."),
-});
-
-const ResizeParams = z.object({
-	id: z
-		.string()
 		.optional()
 		.describe(
-			"The shape ID to resize. Required when multiple shapes are selected.",
+			"Relative vertical movement in pixels. Positive = down, negative = up.",
 		),
 	width: z.number().optional().describe("New width in pixels."),
 	height: z.number().optional().describe("New height in pixels."),
@@ -55,21 +52,16 @@ const ResizeParams = z.object({
 		.describe(
 			"Scale factor. Use this for 'bigger/smaller' requests (e.g., 1.5 = 50% bigger, 0.5 = half size).",
 		),
-});
-
-const ChangeColorParams = z.object({
-	id: z
-		.string()
-		.optional()
-		.describe(
-			"The shape ID to recolor. Required when multiple shapes are selected.",
-		),
 	fill: hexColor
 		.optional()
 		.describe("New fill color as HEX (#RRGGBB or #RGB)."),
 	stroke: hexColor
 		.optional()
 		.describe("New stroke/border color as HEX (#RRGGBB or #RGB)."),
+	strokeWidth: z.number().optional().describe("New stroke width in pixels."),
+	radius: z.number().optional().describe("New corner radius (for rectangles)."),
+	x2: z.number().optional().describe("New absolute X2 position (for lines)."),
+	y2: z.number().optional().describe("New absolute Y2 position (for lines)."),
 });
 
 const GenerateSvgParams = z.object({
@@ -110,9 +102,14 @@ const CreateRectParams = z.object({
 	width: z.number().describe("Width of the rectangle."),
 	height: z.number().describe("Height of the rectangle."),
 	fill: hexColor.optional().describe("Fill color as HEX (#RRGGBB or #RGB)."),
-	stroke: hexColor.optional().describe("Stroke color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor
+		.optional()
+		.describe("Stroke color as HEX (#RRGGBB or #RGB)."),
 	strokeWidth: z.number().optional().describe("Stroke width in pixels."),
-	radius: z.number().optional().describe("Corner radius for rounded rectangles."),
+	radius: z
+		.number()
+		.optional()
+		.describe("Corner radius for rounded rectangles."),
 });
 
 const CreateEllipseParams = z.object({
@@ -121,7 +118,9 @@ const CreateEllipseParams = z.object({
 	width: z.number().describe("Width of the ellipse."),
 	height: z.number().describe("Height of the ellipse."),
 	fill: hexColor.optional().describe("Fill color as HEX (#RRGGBB or #RGB)."),
-	stroke: hexColor.optional().describe("Stroke color as HEX (#RRGGBB or #RGB)."),
+	stroke: hexColor
+		.optional()
+		.describe("Stroke color as HEX (#RRGGBB or #RGB)."),
 	strokeWidth: z.number().optional().describe("Stroke width in pixels."),
 });
 
@@ -145,7 +144,10 @@ const CreateTextParams = z.object({
 	text: z.string().describe("The text content to display."),
 	x: z.number().describe("X position on canvas."),
 	y: z.number().describe("Y position on canvas."),
-	fontSize: z.number().optional().describe("Font size in pixels. Default is 20."),
+	fontSize: z
+		.number()
+		.optional()
+		.describe("Font size in pixels. Default is 20."),
 	fontWeight: z
 		.string()
 		.optional()
@@ -169,15 +171,26 @@ const EditTextParams = z.object({
 	id: z
 		.string()
 		.optional()
-		.describe("The text shape ID to edit. If omitted, applies to current selection."),
+		.describe(
+			"The text shape ID to edit. If omitted, applies to current selection.",
+		),
 	text: z.string().optional().describe("New text content."),
+	x: z.number().optional().describe("New absolute X position."),
+	y: z.number().optional().describe("New absolute Y position."),
+	dx: z.number().optional().describe("Relative horizontal movement."),
+	dy: z.number().optional().describe("Relative vertical movement."),
 	fontSize: z.number().optional().describe("New font size in pixels."),
 	fontWeight: z
 		.string()
 		.optional()
 		.describe("New font weight: '100' to '900', 'normal', or 'bold'."),
 	fontFamily: z.string().optional().describe("New font family name."),
-	shadow: TextShadowParams.optional().describe("Text shadow effect. Set to add/update shadow."),
+	fill: hexColor.optional().describe("New text color as HEX."),
+	stroke: hexColor.optional().describe("New text stroke color as HEX."),
+	strokeWidth: z.number().optional().describe("New text stroke width."),
+	shadow: TextShadowParams.optional().describe(
+		"Text shadow effect. Set to add/update shadow.",
+	),
 });
 
 // Z-order parameter schemas
@@ -192,21 +205,10 @@ const ZOrderParams = z.object({
 
 // Define the tools
 const canvasTools = {
-	moveObject: tool({
+	editShape: tool({
 		description:
-			"Move one or more shapes by a relative offset. Call multiple times to move multiple shapes.",
-
-		inputSchema: MoveParams,
-	}),
-	resize: tool({
-		description:
-			"Resize a shape. Use 'scale' for relative sizing (bigger/smaller) or width/height for absolute dimensions.",
-		inputSchema: ResizeParams,
-	}),
-	changeColor: tool({
-		description:
-			"Change the fill and/or stroke color of a shape. Colors must be HEX codes.",
-		inputSchema: ChangeColorParams,
+			"Edit an existing shape's properties: position (absolute or relative), size (absolute or scale), colors (fill/stroke), stroke width, or corner radius.",
+		inputSchema: EditShapeParams,
 	}),
 	generateSvg: tool({
 		description: "Generate and insert SVG vector art onto the canvas.",
@@ -279,22 +281,7 @@ export type TextShadow = {
 };
 
 export type CanvasCommand =
-	| { tool: "moveObject"; id?: string; target?: string; dx: number; dy: number }
-	| {
-			tool: "resize";
-			id?: string;
-			target?: string;
-			width?: number;
-			height?: number;
-			scale?: number;
-	  }
-	| {
-			tool: "changeColor";
-			id?: string;
-			target?: string;
-			fill?: string;
-			stroke?: string;
-	  }
+	| ({ tool: "editShape" } & z.infer<typeof EditShapeParams>)
 	| {
 			tool: "generateSvg";
 			id?: string;
@@ -314,15 +301,7 @@ export type CanvasCommand =
 			height?: number;
 	  }
 	| { tool: "editImage"; id?: string; prompt: string }
-	| {
-			tool: "editText";
-			id?: string;
-			text?: string;
-			fontSize?: number;
-			fontWeight?: string;
-			fontFamily?: string;
-			shadow?: TextShadow;
-	  }
+	| ({ tool: "editText" } & z.infer<typeof EditTextParams>)
 	| { tool: "combineSelection" }
 	// Shape creation commands
 	| {
@@ -401,26 +380,21 @@ export const interpret = action({
 		commands: v.array(
 			v.union(
 				v.object({
-					tool: v.literal("moveObject"),
+					tool: v.literal("editShape"),
 					id: v.optional(v.string()),
-					target: v.optional(v.string()),
-					dx: v.number(),
-					dy: v.number(),
-				}),
-				v.object({
-					tool: v.literal("resize"),
-					id: v.optional(v.string()),
-					target: v.optional(v.string()),
+					x: v.optional(v.number()),
+					y: v.optional(v.number()),
+					dx: v.optional(v.number()),
+					dy: v.optional(v.number()),
 					width: v.optional(v.number()),
 					height: v.optional(v.number()),
 					scale: v.optional(v.number()),
-				}),
-				v.object({
-					tool: v.literal("changeColor"),
-					id: v.optional(v.string()),
-					target: v.optional(v.string()),
 					fill: v.optional(v.string()),
 					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
+					radius: v.optional(v.number()),
+					x2: v.optional(v.number()),
+					y2: v.optional(v.number()),
 				}),
 				v.object({
 					tool: v.literal("generateSvg"),
@@ -449,9 +423,16 @@ export const interpret = action({
 					tool: v.literal("editText"),
 					id: v.optional(v.string()),
 					text: v.optional(v.string()),
+					x: v.optional(v.number()),
+					y: v.optional(v.number()),
+					dx: v.optional(v.number()),
+					dy: v.optional(v.number()),
 					fontSize: v.optional(v.number()),
 					fontWeight: v.optional(v.string()),
 					fontFamily: v.optional(v.string()),
+					fill: v.optional(v.string()),
+					stroke: v.optional(v.string()),
+					strokeWidth: v.optional(v.number()),
 					shadow: v.optional(
 						v.object({
 							color: v.string(),
@@ -623,27 +604,30 @@ export const interpret = action({
 });
 
 // Helper to generate human-readable label from a tool call
-function generateLabel(toolName: string, args: Record<string, unknown>): string {
+function generateLabel(
+	toolName: string,
+	args: Record<string, unknown>,
+): string {
 	switch (toolName) {
-		case "moveObject": {
-			const dx = args.dx as number;
-			const dy = args.dy as number;
-			if (Math.abs(dx) > Math.abs(dy)) {
-				return dx > 0 ? "Move right" : "Move left";
-			}
-			return dy > 0 ? "Move down" : "Move up";
-		}
-		case "resize": {
-			if (args.scale !== undefined) {
-				const scale = args.scale as number;
-				return scale > 1 ? `Make ${Math.round((scale - 1) * 100)}% bigger` : `Make ${Math.round((1 - scale) * 100)}% smaller`;
-			}
-			return "Resize";
-		}
-		case "changeColor":
+		case "editShape": {
 			if (args.fill) return `Paint ${args.fill}`;
 			if (args.stroke) return `Stroke ${args.stroke}`;
-			return "Change color";
+			if (args.dx !== undefined || args.dy !== undefined) {
+				const dx = (args.dx as number) || 0;
+				const dy = (args.dy as number) || 0;
+				if (Math.abs(dx) > Math.abs(dy)) {
+					return dx > 0 ? "Move right" : "Move left";
+				}
+				return dy > 0 ? "Move down" : "Move up";
+			}
+			if (args.scale !== undefined) {
+				const scale = args.scale as number;
+				return scale > 1
+					? `Make ${Math.round((scale - 1) * 100)}% bigger`
+					: `Make ${Math.round((1 - scale) * 100)}% smaller`;
+			}
+			return "Edit shape";
+		}
 		case "generateSvg":
 			return "Generate SVG";
 		case "generateImage":
@@ -651,12 +635,15 @@ function generateLabel(toolName: string, args: Record<string, unknown>): string 
 		case "editImage":
 			return `Edit: ${(args.prompt as string)?.slice(0, 20) || "image"}...`;
 		case "editText": {
-			if (args.fontWeight === "bold" || args.fontWeight === "700") return "Make bold";
-			if (args.fontWeight === "normal" || args.fontWeight === "400") return "Make normal weight";
+			if (args.fontWeight === "bold" || args.fontWeight === "700")
+				return "Make bold";
+			if (args.fontWeight === "normal" || args.fontWeight === "400")
+				return "Make normal weight";
 			if (args.fontSize) return `Set font size to ${args.fontSize}px`;
 			if (args.fontFamily) return `Change font to ${args.fontFamily}`;
 			if (args.shadow) return "Add text shadow";
-			if (args.text) return `Change text to "${(args.text as string).slice(0, 15)}..."`;
+			if (args.text)
+				return `Change text to "${(args.text as string).slice(0, 15)}..."`;
 			return "Edit text";
 		}
 		case "combineSelection":
@@ -695,23 +682,21 @@ export const suggestActions = action({
 				label: v.string(),
 				command: v.union(
 					v.object({
-						tool: v.literal("moveObject"),
+						tool: v.literal("editShape"),
 						id: v.optional(v.string()),
-						dx: v.number(),
-						dy: v.number(),
-					}),
-					v.object({
-						tool: v.literal("resize"),
-						id: v.optional(v.string()),
+						x: v.optional(v.number()),
+						y: v.optional(v.number()),
+						dx: v.optional(v.number()),
+						dy: v.optional(v.number()),
 						width: v.optional(v.number()),
 						height: v.optional(v.number()),
 						scale: v.optional(v.number()),
-					}),
-					v.object({
-						tool: v.literal("changeColor"),
-						id: v.optional(v.string()),
 						fill: v.optional(v.string()),
 						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
+						radius: v.optional(v.number()),
+						x2: v.optional(v.number()),
+						y2: v.optional(v.number()),
 					}),
 					v.object({
 						tool: v.literal("generateSvg"),
@@ -740,9 +725,16 @@ export const suggestActions = action({
 						tool: v.literal("editText"),
 						id: v.optional(v.string()),
 						text: v.optional(v.string()),
+						x: v.optional(v.number()),
+						y: v.optional(v.number()),
+						dx: v.optional(v.number()),
+						dy: v.optional(v.number()),
 						fontSize: v.optional(v.number()),
 						fontWeight: v.optional(v.string()),
 						fontFamily: v.optional(v.string()),
+						fill: v.optional(v.string()),
+						stroke: v.optional(v.string()),
+						strokeWidth: v.optional(v.number()),
 						shadow: v.optional(
 							v.object({
 								color: v.string(),
@@ -845,11 +837,9 @@ export const suggestActions = action({
 ALL suggestions must operate on the EXISTING selection. Do NOT suggest creating new shapes (createRect, createEllipse, createLine, createText, generateImage, generateSvg).
 
 Only use these tools for selected elements:
-- changeColor: Change fill or stroke color
-- resize: Make bigger/smaller (use scale like 1.2 for 20% bigger, 0.8 for 20% smaller)
-- moveObject: Move left/right/up/down (use dx/dy in pixels)
+- editShape: Change fill, stroke, size, or position (dx/dy)
 - bringToFront, sendToBack, moveUp, moveDown: Change layer order
-${selectionType === "text" ? "- editText: Edit text properties (fontSize, fontWeight like 'bold'/'700', fontFamily, shadow)" : ""}
+${selectionType === "text" ? "- editText: Edit text properties (text, fontSize, fontWeight, fill, position)" : ""}
 ${selectionType === "image" ? "- editImage: Edit the image with AI" : ""}
 ${selectionType === "multiple" ? "- combineSelection: Merge selected elements into one image" : ""}
 
@@ -878,7 +868,9 @@ The tools you call will become clickable suggestion buttons for the user.`;
 				JSON.stringify(args.selectedShapes, null, 2),
 			);
 		} else {
-			contextParts.push("No shapes currently selected (empty canvas or nothing selected).");
+			contextParts.push(
+				"No shapes currently selected (empty canvas or nothing selected).",
+			);
 		}
 
 		const userContent: Array<
