@@ -246,7 +246,7 @@ function SingleDesignCanvas({
 		top: 0,
 	});
 	const [rcBusy, setRcBusy] = useState(false);
-	const [rcPlaceholder, setRcPlaceholder] = useState("what should we do?");
+	const [rcPlaceholder, setRcPlaceholder] = useState("paint it yellow");
 
 	const interpret = useAction(api.canvas_ai.interpret);
 	const generateCanvasImage = useAction(api.images.generateCanvasImage);
@@ -553,12 +553,13 @@ function SingleDesignCanvas({
 	}, [undoStack, scheduleFlush]);
 
 	// For AI commands that need the old command system
+	// Returns a promise that resolves when all async operations (image generation) are complete
 	const applyCommandGroup = useCallback(
-		(
+		async (
 			commands: Array<AnyCommand>,
 			_opts?: { recordUndo?: boolean },
 			context?: { userPrompt: string; canvasDataUrl: string },
-		) => {
+		): Promise<void> => {
 			const imageCommands = commands.filter(
 				(c) =>
 					c.tool === "generateImage" ||
@@ -661,128 +662,139 @@ function SingleDesignCanvas({
 
 			if (imageCommands.length > 0) {
 				setIsProcessing(true);
-				void (async () => {
-					try {
-						for (const cmd of imageCommands) {
-							if (cmd.tool === "generateImage") {
-								const prompt = cmd.prompt || "";
-								const res = await generateCanvasImage({
-									prompt,
-									width: cmd.width,
-									height: cmd.height,
-									// Pass canvas context as reference if available
-									referenceImageUrl: context?.canvasDataUrl,
+				try {
+					for (const cmd of imageCommands) {
+						if (cmd.tool === "generateImage") {
+							const prompt = cmd.prompt || "";
+							// Only pass canvas context as reference when something is selected
+							const hasSelection = selectedIds.length > 0 || !!selectedId;
+							const res = await generateCanvasImage({
+								prompt,
+								width: cmd.width,
+								height: cmd.height,
+								referenceImageUrl: hasSelection
+									? context?.canvasDataUrl
+									: undefined,
+							});
+							const id = cmd.id || createShapeId("img");
+							const newShape: ImageShape = {
+								id,
+								type: "image",
+								x: cmd.x ?? 40,
+								y: cmd.y ?? 40,
+								width: res.width,
+								height: res.height,
+								href: res.storageUrl, // Use storage URL instead of base64
+							};
+							addShapeOp(newShape);
+						} else if (cmd.tool === "editImage") {
+							const id = cmd.id || selectedId;
+							if (!id || !cmd.prompt) continue;
+							const before = shapes.find(
+								(s): s is ImageShape => s.id === id && s.type === "image",
+							);
+							if (!before) continue;
+							const res = await editCanvasImage({
+								imageUrl: before.href,
+								prompt: cmd.prompt,
+							});
+							updateShapeOp(before.id, before, { href: res.storageUrl });
+						} else if (cmd.tool === "combineSelection") {
+							// Generate a new image from selected elements (or full canvas if nothing selected)
+							if (!context?.userPrompt) {
+								console.log("combineSelection: missing prompt");
+								continue;
+							}
+
+							console.log("combineSelection", context?.userPrompt);
+
+							try {
+								// Determine which shapes to render
+								const idsToRender =
+									selectedIds.length > 0
+										? selectedIds
+										: selectedId
+											? [selectedId]
+											: undefined; // undefined = full canvas
+
+								const renderContext = await renderCanvasContext({
+									shapes,
+									canvasWidth: design.width,
+									canvasHeight: design.height,
+									selectedIds: idsToRender,
 								});
-								const id = cmd.id || createShapeId("img");
+
+								// Calculate bounds to position the result
+								let bounds = {
+									x: 0,
+									y: 0,
+									width: design.width,
+									height: design.height,
+								};
+								if (idsToRender && idsToRender.length > 0) {
+									const selectedShapes = shapes.filter((s) =>
+										idsToRender.includes(s.id),
+									);
+									if (selectedShapes.length > 0) {
+										const xs = selectedShapes.map((s) => s.x);
+										const ys = selectedShapes.map((s) => s.y);
+										const x2s = selectedShapes.map((s) =>
+											"width" in s ? s.x + s.width : s.x,
+										);
+										const y2s = selectedShapes.map((s) =>
+											"height" in s ? s.y + s.height : s.y,
+										);
+										bounds = {
+											x: Math.min(...xs),
+											y: Math.min(...ys),
+											width: Math.max(...x2s) - Math.min(...xs),
+											height: Math.max(...y2s) - Math.min(...ys),
+										};
+									}
+								}
+
+								// Build prompt with instructions to preserve composition while creating cohesive output
+								const combinePrompt = `Based on the reference image, create a new cohesive image that:
+- Preserves the general placement and positioning of elements from the reference
+- Maintains the overall composition and spatial arrangement
+- Transforms the separate elements into a unified, cohesive scene (not disjoint cutouts)
+- Follows this user instruction: ${context.userPrompt}
+
+Generate a polished, complete image that feels like a single unified artwork, not a collage.`;
+
+								const result = await generateCanvasImage({
+									prompt: combinePrompt,
+									referenceImageUrl: renderContext.dataUrl,
+								});
+
+								// Add the generated image as a new shape, using actual result dimensions
+								const id = createShapeId("img");
 								const newShape: ImageShape = {
 									id,
 									type: "image",
-									x: cmd.x ?? 40,
-									y: cmd.y ?? 40,
-									width: res.width,
-									height: res.height,
-									href: res.storageUrl, // Use storage URL instead of base64
+									x: bounds.x,
+									y: bounds.y,
+									width: result.width,
+									height: result.height,
+									href: result.storageUrl,
 								};
 								addShapeOp(newShape);
-							} else if (cmd.tool === "editImage") {
-								const id = cmd.id || selectedId;
-								if (!id || !cmd.prompt) continue;
-								const before = shapes.find(
-									(s): s is ImageShape => s.id === id && s.type === "image",
-								);
-								if (!before) continue;
-								const res = await editCanvasImage({
-									imageUrl: before.href,
-									prompt: cmd.prompt,
-								});
-								updateShapeOp(before.id, before, { href: res.storageUrl });
-							} else if (cmd.tool === "combineSelection") {
-								// Generate a new image from selected elements (or full canvas if nothing selected)
-								if (!context?.userPrompt) {
-									console.log("combineSelection: missing prompt");
-									continue;
-								}
-
-								console.log("combineSelection", context?.userPrompt);
-
-								try {
-									// Determine which shapes to render
-									const idsToRender =
-										selectedIds.length > 0
-											? selectedIds
-											: selectedId
-												? [selectedId]
-												: undefined; // undefined = full canvas
-
-									const renderContext = await renderCanvasContext({
-										shapes,
-										canvasWidth: design.width,
-										canvasHeight: design.height,
-										selectedIds: idsToRender,
-									});
-
-									// Calculate bounds to position the result
-									let bounds = {
-										x: 0,
-										y: 0,
-										width: design.width,
-										height: design.height,
-									};
-									if (idsToRender && idsToRender.length > 0) {
-										const selectedShapes = shapes.filter((s) =>
-											idsToRender.includes(s.id),
-										);
-										if (selectedShapes.length > 0) {
-											const xs = selectedShapes.map((s) => s.x);
-											const ys = selectedShapes.map((s) => s.y);
-											const x2s = selectedShapes.map((s) =>
-												"width" in s ? s.x + s.width : s.x,
-											);
-											const y2s = selectedShapes.map((s) =>
-												"height" in s ? s.y + s.height : s.y,
-											);
-											bounds = {
-												x: Math.min(...xs),
-												y: Math.min(...ys),
-												width: Math.max(...x2s) - Math.min(...xs),
-												height: Math.max(...y2s) - Math.min(...ys),
-											};
-										}
-									}
-
-									const result = await generateCanvasImage({
-										prompt: context.userPrompt,
-										referenceImageUrl: renderContext.dataUrl,
-									});
-
-									// Add the generated image as a new shape, using actual result dimensions
-									const id = createShapeId("img");
-									const newShape: ImageShape = {
-										id,
-										type: "image",
-										x: bounds.x,
-										y: bounds.y,
-										width: result.width,
-										height: result.height,
-										href: result.storageUrl,
-									};
-									addShapeOp(newShape);
-									// Select the new image
-									setSelectedId(id);
-									setSelectedIds([id]);
-								} catch (err) {
-									console.error("combineSelection failed:", err);
-								}
+								// Select the new image
+								setSelectedId(id);
+								setSelectedIds([id]);
+							} catch (err) {
+								console.error("combineSelection failed:", err);
 							}
 						}
-					} finally {
-						setIsProcessing(false);
 					}
-				})();
+				} finally {
+					setIsProcessing(false);
+				}
 			}
 		},
 		[
 			selectedId,
+			selectedIds,
 			shapes,
 			design.width,
 			design.height,
@@ -1065,7 +1077,7 @@ function SingleDesignCanvas({
 		setRcOpen(true);
 		setRcBusy(false);
 		setRcText("");
-		setRcPlaceholder("what should we do?");
+		setRcPlaceholder("paint it yellow");
 		setRcPos({ left: e.clientX, top: e.clientY });
 	};
 
@@ -1797,7 +1809,7 @@ function SingleDesignCanvas({
 						}}
 						className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md p-2 shadow-lg w-72"
 					>
-						<div className="text-xs opacity-70 mb-1">Chat instruct</div>
+						<div className="text-xs opacity-70 mb-1">What should I do?</div>
 						<Input
 							placeholder={rcPlaceholder}
 							value={rcText}
@@ -1868,7 +1880,7 @@ function SingleDesignCanvas({
 													? selectedShapesInfo
 													: undefined,
 										});
-										applyCommandGroup(
+										await applyCommandGroup(
 											res.commands,
 											{ recordUndo: true },
 											{
@@ -1965,7 +1977,7 @@ function SingleDesignCanvas({
 													? selectedShapesInfo
 													: undefined,
 										});
-										applyCommandGroup(
+										await applyCommandGroup(
 											res.commands,
 											{ recordUndo: true },
 											{
